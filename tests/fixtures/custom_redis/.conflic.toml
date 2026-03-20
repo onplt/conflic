@@ -1,0 +1,21 @@
+[conflic]
+severity = "warning"
+
+[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = "docker-compose.yml"
+format = "yaml"
+path = "services.redis.image"
+pattern = "redis:(.*)"
+authority = "enforced"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"

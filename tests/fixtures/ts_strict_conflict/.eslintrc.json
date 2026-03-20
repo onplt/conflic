@@ -1,0 +1,6 @@
+{
+  "rules": {
+    "@typescript-eslint/strict-boolean-expressions": "off",
+    "@typescript-eslint/no-explicit-any": "off"
+  }
+}

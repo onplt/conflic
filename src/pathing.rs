@@ -9,6 +9,7 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     canonicalize_with_ancestor(path).unwrap_or_else(|| lexical_normalize(path))
 }
 
+#[allow(dead_code)]
 pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
     normalize_path(left) == normalize_path(right)
 }

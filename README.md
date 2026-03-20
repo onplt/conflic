@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/conflic/conflic/actions/workflows/ci.yml"><img src="https://github.com/conflic/conflic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/onplt/conflic/actions/workflows/ci.yml"><img src="https://github.com/conflic/conflic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://crates.io/crates/conflic"><img src="https://img.shields.io/crates/v/conflic.svg" alt="crates.io"></a>
   <a href="https://github.com/conflic/conflic/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/conflic.svg" alt="License: MIT"></a>
   <a href="https://github.com/conflic/conflic/releases"><img src="https://img.shields.io/github/v/release/conflic/conflic" alt="GitHub Release"></a>

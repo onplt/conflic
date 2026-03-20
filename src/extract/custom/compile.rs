@@ -12,10 +12,14 @@ pub(super) fn compile_source(
     config: &CustomExtractorConfig,
     index: usize,
     config_path: Option<&Path>,
+    scan_root: Option<&Path>,
 ) -> Result<CompiledCustomSource, ParseDiagnostic> {
     validate_source_format(&source, config, index, config_path)?;
 
     let normalized_file = normalize_path_string(&source.file);
+    let match_path = trim_relative_prefix(&normalized_file);
+    let file_is_absolute =
+        Path::new(&normalized_file).is_absolute() || normalized_file.starts_with("//");
     let is_glob = is_glob_pattern(&source.file);
 
     let filename_glob = if is_glob {
@@ -36,11 +40,17 @@ pub(super) fn compile_source(
     };
 
     let path_glob = if is_glob {
-        Some(compile_glob(&normalized_file).map_err(|error| {
+        let candidate = if file_is_absolute {
+            normalized_file.as_str()
+        } else {
+            match_path.as_str()
+        };
+
+        Some(compile_glob(candidate).map_err(|error| {
             config_diagnostic(
                 config_path,
                 format!(
-                    "Custom extractor '{}' source {} has invalid path glob '{}': {}",
+                    "Custom extractor '{}' source {} has invalid path matcher '{}': {}",
                     config.concept,
                     index + 1,
                     source.file,
@@ -48,31 +58,6 @@ pub(super) fn compile_source(
                 ),
             )
         })?)
-    } else {
-        None
-    };
-
-    let relative_path_glob = if is_glob {
-        let trimmed = normalized_file
-            .trim_start_matches("./")
-            .trim_start_matches(".\\")
-            .to_string();
-        if !trimmed.starts_with("**/") && !Path::new(&trimmed).is_absolute() {
-            Some(compile_glob(&format!("**/{}", trimmed)).map_err(|error| {
-                config_diagnostic(
-                    config_path,
-                    format!(
-                        "Custom extractor '{}' source {} has invalid relative path glob '{}': {}",
-                        config.concept,
-                        index + 1,
-                        source.file,
-                        error
-                    ),
-                )
-            })?)
-        } else {
-            None
-        }
     } else {
         None
     };
@@ -97,10 +82,11 @@ pub(super) fn compile_source(
 
     Ok(CompiledCustomSource {
         config: source,
-        normalized_file,
+        match_path,
+        scan_root: scan_root.map(crate::pathing::normalize_root),
+        file_is_absolute,
         filename_glob,
         path_glob,
-        relative_path_glob,
         pattern_regex,
     })
 }
@@ -119,23 +105,52 @@ impl CompiledCustomSource {
             return true;
         }
 
-        let path_str = normalize_path_string(&path.to_string_lossy());
+        let normalized_path = crate::pathing::normalize_path(path);
+        let path_str = normalize_path_string(&normalized_path.to_string_lossy());
+        let relative_path = self.relative_path_for_match(&normalized_path);
 
         if let Some(glob) = &self.path_glob
-            && glob.is_match(&path_str)
-        {
-            return true;
-        }
-
-        if let Some(glob) = &self.relative_path_glob
-            && glob.is_match(&path_str)
+            && self
+                .path_match_candidate(&path_str, relative_path.as_deref())
+                .is_some_and(|candidate| glob.is_match(candidate))
         {
             return true;
         }
 
         self.filename_glob.is_none()
-            && self.normalized_file.contains('/')
-            && path_str.ends_with(&self.normalized_file)
+            && self.match_path.contains('/')
+            && self.path_match_candidate(&path_str, relative_path.as_deref())
+                == Some(self.match_path.as_str())
+    }
+
+    fn path_match_candidate<'a>(
+        &'a self,
+        absolute_path: &'a str,
+        relative_path: Option<&'a str>,
+    ) -> Option<&'a str> {
+        if self.file_is_absolute {
+            Some(absolute_path)
+        } else {
+            relative_path
+        }
+    }
+
+    fn relative_path_for_match(&self, normalized_path: &Path) -> Option<String> {
+        if self.file_is_absolute {
+            return None;
+        }
+
+        if !normalized_path.is_absolute() {
+            return Some(trim_relative_prefix(&normalize_path_string(
+                &normalized_path.to_string_lossy(),
+            )));
+        }
+
+        let scan_root = self.scan_root.as_deref()?;
+        let relative = normalized_path.strip_prefix(scan_root).ok()?;
+        Some(trim_relative_prefix(&normalize_path_string(
+            &relative.to_string_lossy(),
+        )))
     }
 }
 
@@ -187,4 +202,10 @@ fn is_glob_pattern(pattern: &str) -> bool {
 
 fn normalize_path_string(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+fn trim_relative_prefix(path: &str) -> String {
+    path.trim_start_matches("./")
+        .trim_start_matches(".\\")
+        .to_string()
 }

@@ -40,6 +40,8 @@ pub enum ConfigError {
 
 #[derive(Debug, Error)]
 pub enum GitError {
+    #[error("Invalid --diff ref '{value}': refs must not start with '-'")]
+    InvalidDiffRef { value: String },
     #[error("Failed to run `git {command}`: {source}")]
     Spawn {
         command: String,

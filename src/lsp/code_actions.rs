@@ -11,8 +11,6 @@ static TOOL_VERSIONS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\s*\S+\s+)(\S+)(.*)$").unwrap());
 static GEMFILE_RUBY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^(\s*ruby\s+['"])([^'"]+)(['"].*)$"#).unwrap());
-static DOCKER_FROM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\s*FROM\s+)(.*)$").unwrap());
 static DOCKER_EXPOSE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\s*EXPOSE\s+)(.*)$").unwrap());
 
@@ -108,7 +106,7 @@ fn proposal_to_text_edit(content: &str, proposal: &FixProposal) -> Result<TextEd
             replacement: value.to_string(),
         },
         FixOperation::ReplaceDockerFromArguments { arguments } => {
-            regex_capture_replacement(content, proposal.line, &DOCKER_FROM_RE, 2, arguments)?
+            docker_from_replacement(content, proposal.line, arguments)?
         }
         FixOperation::ReplaceDockerExposeToken { current, value } => {
             docker_expose_token_replacement(content, proposal.line, current, value)?
@@ -143,21 +141,13 @@ fn env_value_replacement(
     value: &str,
 ) -> Result<TextReplacement, String> {
     let line_info = line_info(content, line)?;
-    let Some(eq_pos) = line_info.text.find('=') else {
-        return Err(format!("Line {} is not a KEY=value assignment", line));
-    };
-    let normalized = line_info.text[..=eq_pos]
-        .trim()
-        .strip_prefix("export ")
-        .unwrap_or_else(|| line_info.text[..=eq_pos].trim());
-    if normalized.trim_end_matches('=').trim() != key {
-        return Err(format!("Line {} does not match env key {}", line, key));
-    }
+    let replacement =
+        crate::fix::patcher::rewrite_env_assignment_line(line_info.text, line, key, value)?;
 
     Ok(TextReplacement {
-        start: line_info.start + eq_pos + 1,
+        start: line_info.start,
         end: line_info.end,
-        replacement: value.to_string(),
+        replacement,
     })
 }
 
@@ -193,6 +183,38 @@ fn regex_capture_replacement(
         start: line_info.start + capture.start(),
         end: line_info.start + capture.end(),
         replacement: replacement.to_string(),
+    })
+}
+
+fn docker_from_replacement(
+    content: &str,
+    line: usize,
+    arguments: &str,
+) -> Result<TextReplacement, String> {
+    let Some((start, end)) = crate::parse::dockerfile::docker_instruction_offsets(content, line)
+    else {
+        return Err(format!(
+            "Line {} is not a Dockerfile FROM instruction",
+            line
+        ));
+    };
+
+    let original = &content[start..end];
+    if !original
+        .split_whitespace()
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("FROM"))
+    {
+        return Err(format!(
+            "Line {} is not a Dockerfile FROM instruction",
+            line
+        ));
+    }
+
+    Ok(TextReplacement {
+        start,
+        end,
+        replacement: format!("FROM {}", arguments),
     })
 }
 
@@ -389,5 +411,61 @@ mod tests {
                 character: 0,
             }
         );
+    }
+
+    #[test]
+    fn test_env_code_actions_preserve_inline_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".env");
+        std::fs::write(&file, "PORT=3000 # keep comment\nNAME=demo\n").unwrap();
+
+        let plan = FixPlan {
+            proposals: vec![FixProposal {
+                file: file.clone(),
+                concept: SemanticConcept {
+                    id: "app-port".into(),
+                    display_name: "Application Port".into(),
+                    category: ConceptCategory::Port,
+                },
+                current_raw: "3000".into(),
+                proposed_raw: "8080".into(),
+                key_path: "PORT".into(),
+                line: 1,
+                authority_winner: "enforced".into(),
+                winner_file: PathBuf::from("docker-compose.yml"),
+                format: FileFormat::Env,
+                operation: FixOperation::ReplaceEnvValue {
+                    key: "PORT".into(),
+                    value: "8080".into(),
+                },
+            }],
+            unfixable: vec![],
+        };
+        let uri = Url::from_file_path(&file).unwrap();
+        let range = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: u32::MAX,
+            },
+        };
+
+        let actions = proposals_to_code_actions(&plan, &uri, &range, None);
+        assert_eq!(actions.len(), 1);
+
+        let changes = actions[0]
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .and_then(|changes| changes.get(&uri))
+            .unwrap();
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].new_text, "PORT=8080 # keep comment");
+        assert_eq!(changes[0].range.start.line, 0);
+        assert_eq!(changes[0].range.end.line, 0);
     }
 }

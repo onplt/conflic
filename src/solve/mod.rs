@@ -8,6 +8,7 @@ mod findings;
 mod monorepo;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::ConflicConfig;
@@ -45,6 +46,19 @@ pub fn compare_assertions(
         }
 
         let concept = group[0].concept.clone();
+        let unique_files: HashSet<_> = group
+            .iter()
+            .map(|assertion| crate::pathing::normalize_path(&assertion.source.file))
+            .collect();
+        if unique_files.len() < 2 {
+            results.push(ConceptResult {
+                concept,
+                assertions: group,
+                findings: vec![],
+            });
+            continue;
+        }
+
         let findings = if use_monorepo && !config.monorepo.global_concepts.contains(&concept_id) {
             monorepo::find_monorepo_contradictions(scan_root, &group, config)
         } else {

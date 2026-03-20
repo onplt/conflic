@@ -62,22 +62,23 @@ pub(crate) struct PlainTextVersionStrategy<'a> {
 
 impl VersionExtractionStrategy for PlainTextVersionStrategy<'_> {
     fn extract(&self, file: &ParsedFile) -> Vec<ConfigAssertion> {
-        let FileContent::PlainText(text) = &file.content else {
+        let FileContent::PlainText(_) = &file.content else {
             return Vec::new();
         };
 
-        if text.is_empty() {
+        let Some((line, text)) = crate::parse::plain_text::first_meaningful_line(&file.raw_text)
+        else {
             return Vec::new();
-        }
+        };
 
-        let normalized = self.normalizer.normalize(text);
+        let normalized = self.normalizer.normalize(&text);
         vec![ConfigAssertion::new(
             self.runtime.concept(),
             SemanticType::Version(parse_version(normalized.as_ref())),
-            text.clone(),
+            text,
             SourceLocation {
                 file: file.path.clone(),
-                line: 1,
+                line,
                 column: 0,
                 key_path: String::new(),
             },
@@ -193,28 +194,43 @@ impl CiYamlCollectionContext<'_> {
         match value {
             serde_json::Value::Array(sequence) => sequence
                 .iter()
-                .filter_map(|item| yaml_scalar_to_string(item, self.scalar_strategy))
-                .map(|raw_value| {
-                    let line = find_line_for_key_value(self.raw_text, key, &raw_value);
-                    ConfigAssertion::new(
-                        self.runtime.concept(),
-                        SemanticType::Version(parse_version(&raw_value)),
-                        raw_value,
-                        SourceLocation {
-                            file: self.path.to_path_buf(),
-                            line,
-                            column: 0,
-                            key_path: format!("matrix.{}", key),
-                        },
-                        Authority::Enforced,
-                        self.extractor_id,
+                .enumerate()
+                .filter_map(|(item_index, item)| {
+                    let rendered_value = yaml_scalar_to_string(item, self.scalar_strategy)?;
+                    let (line, raw_value) = crate::parse::yaml::sequence_scalar_literal_for_key(
+                        self.raw_text,
+                        key,
+                        item_index,
                     )
-                    .with_matrix(true)
+                    .unwrap_or_else(|| {
+                        let line = find_line_for_key_value(self.raw_text, key, &rendered_value);
+                        (line, rendered_value)
+                    });
+
+                    Some(
+                        ConfigAssertion::new(
+                            self.runtime.concept(),
+                            SemanticType::Version(parse_version(&raw_value)),
+                            raw_value,
+                            SourceLocation {
+                                file: self.path.to_path_buf(),
+                                line,
+                                column: 0,
+                                key_path: format!("matrix.{}", key),
+                            },
+                            Authority::Enforced,
+                            self.extractor_id,
+                        )
+                        .with_matrix(true),
+                    )
                 })
                 .collect(),
             _ => yaml_scalar_to_string(value, self.scalar_strategy)
                 .map(|raw_value| {
                     let line = find_line_for_key_value(self.raw_text, key, &raw_value);
+                    let raw_value =
+                        crate::parse::yaml::inline_scalar_literal_for_key(self.raw_text, line, key)
+                            .unwrap_or(raw_value);
                     vec![ConfigAssertion::new(
                         self.runtime.concept(),
                         SemanticType::Version(parse_version(&raw_value)),
@@ -236,7 +252,7 @@ impl CiYamlCollectionContext<'_> {
 
 impl VersionExtractionStrategy for CiYamlVersionStrategy<'_> {
     fn extract(&self, file: &ParsedFile) -> Vec<ConfigAssertion> {
-        if !is_ci_config_path(&file.path) {
+        if !is_ci_config_path(&file.path, &file.scan_root) {
             return Vec::new();
         }
 
@@ -328,33 +344,8 @@ fn yaml_scalar_to_string(value: &YamlValue, strategy: YamlScalarStrategy) -> Opt
     }
 }
 
-fn is_ci_config_path(path: &Path) -> bool {
-    if path
-        .file_name()
-        .is_some_and(|name| name == ".gitlab-ci.yml")
-    {
-        return true;
-    }
-
-    let mut saw_dot_github = false;
-    for component in path.components() {
-        let Some(component) = component.as_os_str().to_str() else {
-            saw_dot_github = false;
-            continue;
-        };
-
-        if saw_dot_github && component == "workflows" {
-            return true;
-        }
-
-        if component == ".circleci" {
-            return true;
-        }
-
-        saw_dot_github = component == ".github";
-    }
-
-    false
+fn is_ci_config_path(path: &Path, scan_root: &Path) -> bool {
+    crate::pathing::classify_ci_config_path(scan_root, path).is_some()
 }
 
 fn line_value_for_tool<'a>(line: &'a str, tool_names: &[&str]) -> Option<&'a str> {
@@ -376,4 +367,32 @@ fn extract_matching_docker_image_version(from_args: &str, image_names: &[&str]) 
     image_names
         .iter()
         .find_map(|image_name| extract_docker_image_version(from_args, image_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn plain_text_version_strategy_tracks_original_source_line() {
+        let parsed = crate::parse::parse_file_with_content(
+            Path::new(".nvmrc"),
+            Path::new("."),
+            "# comment\n\n20\n".to_string(),
+        )
+        .expect("plain-text file should parse");
+
+        let assertions = PlainTextVersionStrategy {
+            runtime: RuntimeVersionKind::Node,
+            authority: Authority::Advisory,
+            extractor_id: "node-version-nvmrc",
+            normalizer: PlainTextNormalizer::Identity,
+        }
+        .extract(&parsed);
+
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].raw_value, "20");
+        assert_eq!(assertions[0].source.line, 3);
+    }
 }

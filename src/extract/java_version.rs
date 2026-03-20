@@ -46,8 +46,14 @@ impl Extractor for PomXmlExtractor {
             "maven.compiler.target",
             self.id(),
         ));
+        results.extend(xml_java_assertions(
+            file,
+            raw,
+            "maven.compiler.release",
+            self.id(),
+        ));
         results.extend(xml_java_assertions(file, raw, "java.version", self.id()));
-        results.extend(xml_java_assertions(file, raw, "release", self.id()));
+        results.extend(maven_compiler_release_assertions(file, raw, self.id()));
 
         results
     }
@@ -194,6 +200,30 @@ fn xml_java_assertions(
         .into_iter()
         .map(|xml_match| {
             let location = location_from_span(&file.path, tag, xml_match.span);
+            ConfigAssertion::new(
+                SemanticConcept::java_version(),
+                SemanticType::Version(parse_version(&xml_match.raw_value)),
+                xml_match.raw_value,
+                location,
+                Authority::Declared,
+                extractor_id,
+            )
+            .with_span(xml_match.span)
+        })
+        .collect()
+}
+
+fn maven_compiler_release_assertions(
+    file: &ParsedFile,
+    raw: &str,
+    extractor_id: &str,
+) -> Vec<ConfigAssertion> {
+    crate::parse::xml::find_plugin_tag_value_matches(raw, "maven-compiler-plugin", "release")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|xml_match| {
+            let location =
+                location_from_span(&file.path, "maven-compiler-plugin.release", xml_match.span);
             ConfigAssertion::new(
                 SemanticConcept::java_version(),
                 SemanticType::Version(parse_version(&xml_match.raw_value)),

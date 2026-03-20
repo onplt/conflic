@@ -1,3 +1,4 @@
+use assert_cmd::Command as AssertCommand;
 use conflic::config::ConflicConfig;
 use conflic::fix::plan_fixes;
 use conflic::model::Severity;
@@ -179,6 +180,58 @@ fn test_extensionless_eslintrc_is_parsed_for_strict_mode() {
     assert!(
         !ts.findings.is_empty(),
         "extensionless .eslintrc should still participate in contradiction detection"
+    );
+}
+
+#[test]
+fn test_flat_eslint_config_ignores_export_default_mentions_in_comments() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("eslint.config.js"),
+        r#"// mention export default before the real statement
+export default [
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off'
+    }
+  }
+];
+"#,
+    )
+    .unwrap();
+
+    let config = ConflicConfig::default();
+    let result = conflic::scan(root, &config).unwrap();
+    let ts = result
+        .concept_results
+        .iter()
+        .find(|cr| cr.concept.id == "ts-strict-mode")
+        .expect("ts-strict-mode concept should exist");
+
+    assert!(
+        ts.assertions
+            .iter()
+            .any(|assertion| assertion.extractor_id == "ts-strict-eslint"),
+        "flat eslint config should still produce an ESLint strict-mode assertion"
+    );
+    assert!(
+        !ts.findings.is_empty(),
+        "flat eslint config should still participate in contradiction detection"
+    );
+    assert!(
+        result
+            .parse_diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file != root.join("eslint.config.js")),
+        "leading comments should not cause eslint.config.js parse failures: {:?}",
+        result.parse_diagnostics
     );
 }
 
@@ -471,6 +524,56 @@ fn test_custom_extractor_detects_redis_contradiction() {
     assert!(
         !redis.findings.is_empty(),
         "Should find redis version contradiction (7.2 vs 7.0)"
+    );
+}
+
+#[test]
+fn test_custom_extractor_yaml_location_uses_full_key_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join(".conflic.toml"),
+        r#"[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = "docker-compose.yml"
+format = "yaml"
+path = "services.redis.image"
+pattern = "redis:(.*)"
+authority = "enforced"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  web:\n    image: redis:7.2\n  redis:\n    image: redis:7.2\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(".env"), "REDIS_VERSION=6.0\n").unwrap();
+
+    let config = ConflicConfig::load(root, None).unwrap();
+    let result = conflic::scan(root, &config).unwrap();
+    let redis = concept_result(&result, "redis-version");
+    let docker_compose_assertion = redis
+        .assertions
+        .iter()
+        .find(|assertion| assertion.source.file.ends_with("docker-compose.yml"))
+        .expect("docker-compose assertion should exist");
+
+    assert_eq!(
+        docker_compose_assertion.source.line, 5,
+        "custom YAML assertions should follow the full key path instead of the first matching leaf"
     );
 }
 
@@ -1073,6 +1176,61 @@ fn test_cli_diff_re_evaluates_when_explicit_config_changes() {
     assert!(
         stdout.contains("package.json") && stdout.contains("Dockerfile"),
         "expected diff scan to include both concept peers after an explicit config change\nstdout: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_cli_diff_stdin_re_evaluates_when_external_explicit_config_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("workspace");
+    let config_dir = dir.path().join("external-config");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    std::fs::write(repo.join("Dockerfile"), "FROM node:20-alpine\n").unwrap();
+    std::fs::write(repo.join("package.json"), r#"{"engines":{"node":"18"}}"#).unwrap();
+    let config_path = config_dir.join("outside.toml");
+    std::fs::write(
+        &config_path,
+        "[conflic]\nskip_concepts = [\"node-version\"]\n",
+    )
+    .unwrap();
+
+    let suppressed_config = ConflicConfig::load(&repo, Some(config_path.as_path())).unwrap();
+    let suppressed = conflic::scan(&repo, &suppressed_config).unwrap();
+    assert!(
+        suppressed
+            .concept_results
+            .iter()
+            .all(|result| result.concept.id != "node-version"),
+        "precondition failed: the explicit external config should suppress node-version findings"
+    );
+
+    std::fs::write(&config_path, "[conflic]\nskip_concepts = []\n").unwrap();
+
+    let assert = AssertCommand::cargo_bin("conflic")
+        .unwrap()
+        .arg(&repo)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--diff-stdin")
+        .arg("--format")
+        .arg("json")
+        .write_stdin(format!("{}\n", config_path.display()))
+        .assert()
+        .code(1);
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    assert!(
+        stdout.contains("Node.js Version"),
+        "external explicit config changes should trigger a full diff re-evaluation\nstdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("package.json") && stdout.contains("Dockerfile"),
+        "expected diff scan to include both concept peers after an external config change\nstdout: {}",
         stdout
     );
 }
@@ -1822,5 +1980,418 @@ fn test_yaml_key_locations_ignore_freeform_mentions() {
     assert_eq!(
         ci_assertion.source.line, 8,
         "workflow key locations should ignore freeform mentions before the actual key"
+    );
+}
+
+#[test]
+fn test_scan_with_overrides_resolves_inherited_tsconfig_using_override_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("tsconfig.base.json"),
+        r#"{"compilerOptions":{"strict":false}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{"extends":"./tsconfig.base.json"}"#,
+    )
+    .unwrap();
+
+    let mut overrides = HashMap::new();
+    overrides.insert(
+        root.join("tsconfig.base.json"),
+        "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n".to_string(),
+    );
+
+    let result = conflic::scan_with_overrides(root, &ConflicConfig::default(), &overrides).unwrap();
+    let ts = concept_result(&result, "ts-strict-mode");
+
+    assert!(
+        ts.findings.is_empty(),
+        "override-aware extends resolution should not report stale contradictions: {:?}",
+        ts.findings
+    );
+    assert_eq!(ts.assertions.len(), 2);
+    assert!(
+        ts.assertions
+            .iter()
+            .all(|assertion| assertion.raw_value == "true"),
+        "both the parent and inherited child assertion should reflect the override: {:?}",
+        ts.assertions
+    );
+}
+
+#[test]
+fn test_incremental_workspace_uses_override_content_for_extended_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("tsconfig.base.json"),
+        r#"{"compilerOptions":{"strict":false}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{"extends":"./tsconfig.base.json"}"#,
+    )
+    .unwrap();
+
+    let config = ConflicConfig::default();
+    let mut workspace = conflic::IncrementalWorkspace::new(root, &config);
+    let initial = workspace.full_scan(&HashMap::new());
+    let initial_ts = concept_result(&initial, "ts-strict-mode");
+    assert!(
+        initial_ts
+            .assertions
+            .iter()
+            .all(|assertion| assertion.raw_value == "false"),
+        "expected the initial on-disk assertions to stay false: {:?}",
+        initial_ts.assertions
+    );
+
+    let mut overrides = HashMap::new();
+    overrides.insert(
+        root.join("tsconfig.base.json"),
+        "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n".to_string(),
+    );
+
+    let result = workspace.scan_incremental(&[root.join("tsconfig.base.json")], &overrides);
+    let stats = workspace.last_stats();
+    let ts = concept_result(&result, "ts-strict-mode");
+
+    assert!(
+        ts.findings.is_empty(),
+        "incremental scans should re-resolve inherited peers against override content: {:?}",
+        ts.findings
+    );
+    assert_eq!(stats.changed_files, 1);
+    assert_eq!(stats.peer_files, 1);
+    assert!(
+        ts.assertions
+            .iter()
+            .all(|assertion| assertion.raw_value == "true"),
+        "both assertions should reflect the override after the incremental rescan: {:?}",
+        ts.assertions
+    );
+}
+
+#[test]
+fn test_java_generic_release_tag_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>demo</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <release>2024.03</release>
+  </properties>
+</project>"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("Dockerfile"), "FROM eclipse-temurin:17\n").unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let java = concept_result(&result, "java-version");
+
+    assert!(
+        java.findings.is_empty(),
+        "generic release metadata must not create Java-version contradictions: {:?}",
+        java.findings
+    );
+    assert_eq!(java.assertions.len(), 1);
+    assert!(
+        java.assertions
+            .iter()
+            .all(|assertion| assertion.source.key_path != "release"),
+        "generic <release> tags should not be treated as Java runtime assertions: {:?}",
+        java.assertions
+    );
+}
+
+#[test]
+fn test_java_maven_compiler_plugin_release_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>demo</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>17</release>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("Dockerfile"), "FROM eclipse-temurin:21\n").unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let java = concept_result(&result, "java-version");
+
+    assert!(
+        java.assertions
+            .iter()
+            .any(|assertion| assertion.source.key_path == "maven-compiler-plugin.release"),
+        "maven-compiler-plugin release should still participate in Java-version extraction: {:?}",
+        java.assertions
+    );
+    assert!(
+        !java.findings.is_empty(),
+        "compiler plugin release should still be compared against Docker Java versions"
+    );
+}
+
+#[test]
+fn test_nested_github_workflow_directories_are_not_scanned_as_ci_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join(".github").join("workflows").join("nested")).unwrap();
+    std::fs::write(root.join(".nvmrc"), "20\n").unwrap();
+    std::fs::write(
+        root.join(".github")
+            .join("workflows")
+            .join("nested")
+            .join("ci.yml"),
+        "jobs:\n  build:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 18\n",
+    )
+    .unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let node = concept_result(&result, "node-version");
+
+    assert!(
+        node.findings.is_empty(),
+        "nested workflow files should be ignored during CI extraction: {:?}",
+        node.findings
+    );
+    assert_eq!(node.assertions.len(), 1);
+    assert!(
+        node.assertions
+            .iter()
+            .all(|assertion| !assertion.source.file.ends_with("ci.yml")),
+        "only the on-disk .nvmrc assertion should remain: {:?}",
+        node.assertions
+    );
+}
+
+#[test]
+fn test_non_config_circleci_yaml_is_not_scanned_as_ci_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join(".circleci")).unwrap();
+    std::fs::write(root.join("package.json"), r#"{"engines":{"node":"20"}}"#).unwrap();
+    std::fs::write(
+        root.join(".circleci").join("notes.yml"),
+        "meta:\n  node-version: 18\n",
+    )
+    .unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let node = concept_result(&result, "node-version");
+
+    assert!(
+        node.findings.is_empty(),
+        "only .circleci/config.yml should participate in CI extraction: {:?}",
+        node.findings
+    );
+    assert!(
+        node.assertions
+            .iter()
+            .all(|assertion| !assertion.source.file.ends_with("notes.yml")),
+        "non-config CircleCI YAML files must be ignored: {:?}",
+        node.assertions
+    );
+}
+
+#[test]
+fn test_custom_extractor_exact_relative_paths_do_not_match_suffix_neighbors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join(".conflic.toml"),
+        r#"[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = "configs/package.json"
+format = "json"
+path = "custom.redis"
+authority = "declared"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("otherconfigs")).unwrap();
+    std::fs::create_dir_all(root.join("nested").join("configs")).unwrap();
+    std::fs::write(
+        root.join("otherconfigs").join("package.json"),
+        r#"{"custom":{"redis":"7.2"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("nested").join("configs").join("package.json"),
+        r#"{"custom":{"redis":"7.2"}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join(".env"), "REDIS_VERSION=6.0\n").unwrap();
+
+    let config = ConflicConfig::load(root, None).unwrap();
+    let result = conflic::scan(root, &config).unwrap();
+    let redis = concept_result(&result, "redis-version");
+
+    assert!(
+        redis.findings.is_empty(),
+        "root-relative custom source paths must not match suffix neighbors: {:?}",
+        redis.findings
+    );
+    assert_eq!(redis.assertions.len(), 1);
+    assert!(
+        redis.assertions[0].source.file.ends_with(".env"),
+        "only the explicit .env source should match: {:?}",
+        redis.assertions
+    );
+}
+
+#[test]
+fn test_python_ci_unquoted_decimal_preserves_literal_and_avoids_false_positive() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join(".github").join("workflows")).unwrap();
+    std::fs::write(root.join(".python-version"), "3.10\n").unwrap();
+    std::fs::write(
+        root.join(".github").join("workflows").join("ci.yml"),
+        "jobs:\n  test:\n    steps:\n      - uses: actions/setup-python@v5\n        with:\n          python-version: 3.10\n",
+    )
+    .unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let python = concept_result(&result, "python-version");
+
+    assert!(
+        python.findings.is_empty(),
+        "unquoted YAML decimals should not be rounded into false contradictions: {:?}",
+        python.findings
+    );
+    assert!(
+        python
+            .assertions
+            .iter()
+            .any(|assertion| assertion.extractor_id == "python-version-ci"
+                && assertion.raw_value == "3.10"),
+        "CI assertions should preserve the original YAML scalar text: {:?}",
+        python.assertions
+    );
+}
+
+#[test]
+fn test_python_ci_matrix_decimal_preserves_literal_and_avoids_false_positive() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::create_dir_all(root.join(".github").join("workflows")).unwrap();
+    std::fs::write(root.join(".python-version"), "3.10\n").unwrap();
+    std::fs::write(
+        root.join(".github").join("workflows").join("ci.yml"),
+        "jobs:\n  test:\n    strategy:\n      matrix:\n        python-version: [3.10]\n    steps:\n      - uses: actions/setup-python@v5\n        with:\n          python-version: ${{ matrix.python-version }}\n",
+    )
+    .unwrap();
+
+    let result = conflic::scan(root, &ConflicConfig::default()).unwrap();
+    let python = concept_result(&result, "python-version");
+
+    assert!(
+        python.findings.is_empty(),
+        "matrix YAML decimals should not be rounded into false contradictions: {:?}",
+        python.findings
+    );
+    assert!(
+        python
+            .assertions
+            .iter()
+            .any(|assertion| assertion.extractor_id == "python-version-ci"
+                && assertion.source.key_path == "matrix.python-version"
+                && assertion.raw_value == "3.10"),
+        "matrix assertions should preserve the original YAML scalar text: {:?}",
+        python.assertions
+    );
+}
+
+#[test]
+fn test_custom_yaml_decimal_preserves_literal_and_avoids_false_positive() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    std::fs::write(
+        root.join(".conflic.toml"),
+        r#"[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = "settings.yml"
+format = "yaml"
+path = "custom.redis"
+authority = "enforced"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"
+"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("settings.yml"), "custom:\n  redis: 7.20\n").unwrap();
+    std::fs::write(root.join(".env"), "REDIS_VERSION=7.20\n").unwrap();
+
+    let config = ConflicConfig::load(root, None).unwrap();
+    let result = conflic::scan(root, &config).unwrap();
+    let redis = concept_result(&result, "redis-version");
+
+    assert!(
+        redis.findings.is_empty(),
+        "custom YAML scalars should preserve decimal precision: {:?}",
+        redis.findings
+    );
+    assert!(
+        redis
+            .assertions
+            .iter()
+            .any(|assertion| assertion.source.file.ends_with("settings.yml")
+                && assertion.raw_value == "7.20"),
+        "custom YAML assertions should keep the original scalar text: {:?}",
+        redis.assertions
     );
 }

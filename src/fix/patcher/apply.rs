@@ -54,18 +54,7 @@ fn replace_whole_file_value(content: &str, value: &str) -> String {
 
 fn apply_env_fix(content: &str, line: usize, key: &str, value: &str) -> Result<String, String> {
     rewrite_target_line(content, line, |original| {
-        let Some(eq_pos) = original.find('=') else {
-            return Err(format!("Line {} is not a KEY=value assignment", line));
-        };
-        let (lhs, _) = original.split_at(eq_pos + 1);
-        let normalized = lhs
-            .trim()
-            .strip_prefix("export ")
-            .unwrap_or_else(|| lhs.trim());
-        if normalized.trim_end_matches('=').trim() != key {
-            return Err(format!("Line {} does not match env key {}", line, key));
-        }
-        Ok(format!("{}{}", lhs, value))
+        super::rewrite_env_assignment_line(original, line, key, value)
     })
 }
 
@@ -126,18 +115,27 @@ fn apply_text_range_fix(
 }
 
 fn apply_docker_from_fix(content: &str, line: usize, arguments: &str) -> Result<String, String> {
-    rewrite_target_line(content, line, |original| {
-        let re = Regex::new(r"^(\s*FROM\s+).*$").unwrap();
-        if !re.is_match(original) {
-            return Err(format!(
-                "Line {} is not a Dockerfile FROM instruction",
-                line
-            ));
-        }
-        Ok(re
-            .replace(original, format!("${{1}}{}", arguments))
-            .into_owned())
-    })
+    let Some((start, end)) = crate::parse::dockerfile::docker_instruction_offsets(content, line)
+    else {
+        return Err(format!(
+            "Line {} is not a Dockerfile FROM instruction",
+            line
+        ));
+    };
+
+    let original = &content[start..end];
+    if !original
+        .split_whitespace()
+        .next()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("FROM"))
+    {
+        return Err(format!(
+            "Line {} is not a Dockerfile FROM instruction",
+            line
+        ));
+    }
+
+    apply_text_range_fix(content, start, end, &format!("FROM {}", arguments))
 }
 
 fn apply_docker_expose_fix(

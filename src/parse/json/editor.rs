@@ -337,7 +337,7 @@ impl<'a> JsonEditor<'a> {
 
             if current == '\\' {
                 *index += current.len_utf8();
-                decoded.push(self.parse_escape_sequence(index)?);
+                decoded.push_str(&self.parse_escape_sequence(index)?);
                 continue;
             }
 
@@ -352,29 +352,69 @@ impl<'a> JsonEditor<'a> {
         Err("Unterminated JSON string literal".into())
     }
 
-    fn parse_escape_sequence(&self, index: &mut usize) -> Result<char, String> {
+    fn parse_escape_sequence(&self, index: &mut usize) -> Result<String, String> {
         let escape = self
             .next_char(*index)
             .map_err(|_| "Unexpected end of JSON escape sequence".to_string())?;
         *index += escape.len_utf8();
 
         match escape {
-            '"' => Ok('"'),
-            '\'' => Ok('\''),
-            '\\' => Ok('\\'),
-            '/' => Ok('/'),
-            'b' => Ok('\u{0008}'),
-            'f' => Ok('\u{000C}'),
-            'n' => Ok('\n'),
-            'r' => Ok('\r'),
-            't' => Ok('\t'),
-            'u' => self.parse_hex_escape(index, 4),
-            'x' => self.parse_hex_escape(index, 2),
-            other => Ok(other),
+            '"' => Ok("\"".to_string()),
+            '\'' => Ok("'".to_string()),
+            '\\' => Ok("\\".to_string()),
+            '/' => Ok("/".to_string()),
+            'b' => Ok('\u{0008}'.to_string()),
+            'f' => Ok('\u{000C}'.to_string()),
+            'n' => Ok('\n'.to_string()),
+            'r' => Ok('\r'.to_string()),
+            't' => Ok('\t'.to_string()),
+            'u' => self.parse_unicode_escape(index),
+            'x' => self.parse_hex_escape(index, 2).map(|ch| ch.to_string()),
+            other => Ok(other.to_string()),
         }
     }
 
+    fn parse_unicode_escape(&self, index: &mut usize) -> Result<String, String> {
+        let first = self.parse_hex_value(index, 4)? as u16;
+
+        if (0xD800..=0xDBFF).contains(&first) {
+            if self.peek_byte(*index) != Some(b'\\') || self.peek_byte(*index + 1) != Some(b'u') {
+                return Err(format!(
+                    "Invalid unicode surrogate pair starting with {:04X}",
+                    first
+                ));
+            }
+
+            *index += 2;
+            let second = self.parse_hex_value(index, 4)? as u16;
+            if !(0xDC00..=0xDFFF).contains(&second) {
+                return Err(format!(
+                    "Invalid unicode surrogate pair {:04X} {:04X}",
+                    first, second
+                ));
+            }
+
+            let scalar = 0x10000 + ((((first as u32) - 0xD800) << 10) | ((second as u32) - 0xDC00));
+            let ch = char::from_u32(scalar)
+                .ok_or_else(|| format!("Invalid unicode scalar value {:X}", scalar))?;
+            return Ok(ch.to_string());
+        }
+
+        if (0xDC00..=0xDFFF).contains(&first) {
+            return Err(format!("Unexpected low surrogate {:04X}", first));
+        }
+
+        let ch = char::from_u32(first as u32)
+            .ok_or_else(|| format!("Invalid unicode scalar value {:X}", first))?;
+        Ok(ch.to_string())
+    }
+
     fn parse_hex_escape(&self, index: &mut usize, digits: usize) -> Result<char, String> {
+        let value = self.parse_hex_value(index, digits)?;
+        char::from_u32(value).ok_or_else(|| format!("Invalid unicode scalar value {:X}", value))
+    }
+
+    fn parse_hex_value(&self, index: &mut usize, digits: usize) -> Result<u32, String> {
         let end = *index + digits;
         if end > self.bytes.len() {
             return Err("Unexpected end of JSON unicode escape".into());
@@ -384,7 +424,7 @@ impl<'a> JsonEditor<'a> {
         let value = u32::from_str_radix(raw, 16)
             .map_err(|_| format!("Invalid hex escape sequence '{}'", raw))?;
         *index = end;
-        char::from_u32(value).ok_or_else(|| format!("Invalid unicode scalar value {:X}", value))
+        Ok(value)
     }
 
     fn skip_ignored(&self, index: &mut usize) -> Result<(), String> {

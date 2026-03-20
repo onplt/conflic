@@ -53,7 +53,7 @@ impl CustomExtractor {
                 )
                 .with_span(span)
             } else {
-                self.make_assertion(&raw, path, file, authority)
+                self.make_assertion(&raw, path, file, authority, false)
             };
             return vec![assertion];
         }
@@ -71,7 +71,13 @@ impl CustomExtractor {
             && let Some(raw) = navigate_yaml(value, path)
             && let Some(raw) = apply_pattern(&raw, source.pattern_regex.as_ref())
         {
-            return vec![self.make_assertion(&raw, path, file, authority)];
+            return vec![self.make_assertion(
+                &raw,
+                path,
+                file,
+                authority,
+                source.pattern_regex.is_none(),
+            )];
         }
         vec![]
     }
@@ -87,7 +93,7 @@ impl CustomExtractor {
             && let Some(raw) = navigate_toml(value, path)
             && let Some(raw) = apply_pattern(&raw, source.pattern_regex.as_ref())
         {
-            return vec![self.make_assertion(&raw, path, file, authority)];
+            return vec![self.make_assertion(&raw, path, file, authority, false)];
         }
         vec![]
     }
@@ -132,27 +138,27 @@ impl CustomExtractor {
         file: &ParsedFile,
         authority: Authority,
     ) -> Vec<ConfigAssertion> {
-        if let FileContent::PlainText(ref text) = file.content {
-            let trimmed = text.trim();
-            if let Some(raw) = apply_pattern(trimmed, source.pattern_regex.as_ref())
-                && !raw.is_empty()
-            {
-                let value = self.parse_value(&raw);
-                let location = SourceLocation {
-                    file: file.path.clone(),
-                    line: 1,
-                    column: 0,
-                    key_path: String::new(),
-                };
-                return vec![ConfigAssertion::new(
-                    self.concept(),
-                    value,
-                    raw,
-                    location,
-                    authority,
-                    self.id(),
-                )];
-            }
+        if let FileContent::PlainText(_) = file.content
+            && let Some((line, text)) =
+                crate::parse::plain_text::first_meaningful_line(&file.raw_text)
+            && let Some(raw) = apply_pattern(&text, source.pattern_regex.as_ref())
+            && !raw.is_empty()
+        {
+            let value = self.parse_value(&raw);
+            let location = SourceLocation {
+                file: file.path.clone(),
+                line,
+                column: 0,
+                key_path: String::new(),
+            };
+            return vec![ConfigAssertion::new(
+                self.concept(),
+                value,
+                raw,
+                location,
+                authority,
+                self.id(),
+            )];
         }
         vec![]
     }

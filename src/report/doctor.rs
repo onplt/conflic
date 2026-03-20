@@ -7,7 +7,7 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
 
     // Header
     out.push_str(&format!(
-        "conflic v{} — doctor mode\n\n",
+        "conflic v{} - doctor mode\n\n",
         env!("CARGO_PKG_VERSION")
     ));
 
@@ -157,7 +157,7 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
     out.push('\n');
 
     // Final summary
-    let separator = "─".repeat(50);
+    let separator = "-".repeat(50);
     if no_color {
         out.push_str(&separator);
     } else {
@@ -199,4 +199,41 @@ fn simplify_path(path: &Path) -> String {
         return rel.to_string_lossy().to_string();
     }
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DoctorFileInfo;
+    use crate::model::ScanResult;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_render_uses_ascii_header_and_separator() {
+        let report = DoctorReport {
+            root: PathBuf::from("workspace"),
+            discovered_files: HashMap::new(),
+            file_details: Vec::<DoctorFileInfo>::new(),
+            scan_result: ScanResult {
+                concept_results: Vec::new(),
+                parse_diagnostics: Vec::new(),
+            },
+            extractor_count: 0,
+            extractor_names: Vec::new(),
+        };
+
+        let output = render(&report, true);
+
+        assert!(
+            output.contains(" - doctor mode"),
+            "expected ASCII doctor header, got:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("â"),
+            "doctor output should not contain mojibake, got:\n{}",
+            output
+        );
+    }
 }

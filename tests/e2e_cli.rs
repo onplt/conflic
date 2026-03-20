@@ -2,8 +2,10 @@ mod common;
 
 use common::{TestWorkspace, conflic_cmd, conflic_cmd_in};
 use predicates::prelude::*;
+#[cfg(feature = "lsp")]
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+#[cfg(feature = "lsp")]
 use std::process::{Command as ProcessCommand, Stdio};
 #[cfg(feature = "lsp")]
 use std::sync::mpsc::{self, Receiver};

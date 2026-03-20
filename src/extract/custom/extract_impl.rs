@@ -141,26 +141,24 @@ impl CustomExtractor {
         if let FileContent::PlainText(_) = file.content
             && let Some((line, text)) =
                 crate::parse::plain_text::first_meaningful_line(&file.raw_text)
+            && let Some(raw) = apply_pattern(&text, source.pattern_regex.as_ref())
+            && !raw.is_empty()
         {
-            if let Some(raw) = apply_pattern(&text, source.pattern_regex.as_ref())
-                && !raw.is_empty()
-            {
-                let value = self.parse_value(&raw);
-                let location = SourceLocation {
-                    file: file.path.clone(),
-                    line,
-                    column: 0,
-                    key_path: String::new(),
-                };
-                return vec![ConfigAssertion::new(
-                    self.concept(),
-                    value,
-                    raw,
-                    location,
-                    authority,
-                    self.id(),
-                )];
-            }
+            let value = self.parse_value(&raw);
+            let location = SourceLocation {
+                file: file.path.clone(),
+                line,
+                column: 0,
+                key_path: String::new(),
+            };
+            return vec![ConfigAssertion::new(
+                self.concept(),
+                value,
+                raw,
+                location,
+                authority,
+                self.id(),
+            )];
         }
         vec![]
     }

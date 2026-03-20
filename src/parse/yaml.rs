@@ -58,7 +58,10 @@ pub fn sequence_scalar_literal_for_key(
 }
 
 pub fn line_for_key_path(raw: &str, key_path: &str) -> Option<usize> {
-    let segments: Vec<&str> = key_path.split('.').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = key_path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.is_empty() {
         return None;
     }

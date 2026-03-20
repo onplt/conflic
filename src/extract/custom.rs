@@ -150,7 +150,11 @@ impl CustomExtractor {
         let leaf_key = key_path.rsplit('.').next().unwrap_or(key_path);
         let line = if matches!(&file.format, crate::parse::FileFormat::Yaml) {
             crate::parse::yaml::line_for_key_path(&file.raw_text, key_path).unwrap_or_else(|| {
-                crate::parse::source_location::find_line_for_key_value(&file.raw_text, leaf_key, raw)
+                crate::parse::source_location::find_line_for_key_value(
+                    &file.raw_text,
+                    leaf_key,
+                    raw,
+                )
             })
         } else {
             crate::parse::source_location::find_line_for_key_value(&file.raw_text, leaf_key, raw)
@@ -390,12 +394,11 @@ mod tests {
             }],
         };
 
-        let (extractors, diagnostics) =
-            compile_custom_extractors(
-                &[config],
-                Some(Path::new("workspace/.conflic.toml")),
-                Some(Path::new("workspace")),
-            );
+        let (extractors, diagnostics) = compile_custom_extractors(
+            &[config],
+            Some(Path::new("workspace/.conflic.toml")),
+            Some(Path::new("workspace")),
+        );
 
         assert!(
             extractors.is_empty(),
@@ -427,12 +430,11 @@ mod tests {
             }],
         };
 
-        let (extractors, diagnostics) =
-            compile_custom_extractors(
-                &[config],
-                Some(Path::new("workspace/.conflic.toml")),
-                Some(Path::new("workspace")),
-            );
+        let (extractors, diagnostics) = compile_custom_extractors(
+            &[config],
+            Some(Path::new("workspace/.conflic.toml")),
+            Some(Path::new("workspace")),
+        );
 
         assert!(
             extractors.is_empty(),
@@ -464,12 +466,11 @@ mod tests {
             }],
         };
 
-        let (extractors, diagnostics) =
-            compile_custom_extractors(
-                &[config],
-                Some(Path::new("workspace/.conflic.toml")),
-                Some(Path::new("workspace")),
-            );
+        let (extractors, diagnostics) = compile_custom_extractors(
+            &[config],
+            Some(Path::new("workspace/.conflic.toml")),
+            Some(Path::new("workspace")),
+        );
 
         assert!(
             extractors.is_empty(),

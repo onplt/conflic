@@ -1,5 +1,14 @@
 use super::DockerInstruction;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DockerFromImageReference<'a> {
+    pub prefix: &'a str,
+    pub image: &'a str,
+    pub tag: &'a str,
+    pub token: &'a str,
+    pub suffix: &'a str,
+}
+
 /// Parse a Dockerfile into a list of instructions with stage tracking.
 pub fn parse_dockerfile(raw: &str) -> Vec<DockerInstruction> {
     let mut instructions = Vec::new();
@@ -72,6 +81,65 @@ fn parse_stage_name(from_args: &str) -> Option<String> {
     None
 }
 
+pub fn docker_from_image_reference(arguments: &str) -> Option<DockerFromImageReference<'_>> {
+    let bytes = arguments.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            return None;
+        }
+
+        let token_start = index;
+        while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let token_end = index;
+        let token = &arguments[token_start..token_end];
+
+        if token.starts_with("--") {
+            if !token.contains('=') {
+                while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+                while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        let (image, tag) = split_image_and_tag(token)?;
+        return Some(DockerFromImageReference {
+            prefix: &arguments[..token_start],
+            image,
+            tag,
+            token,
+            suffix: &arguments[token_end..],
+        });
+    }
+
+    None
+}
+
+fn split_image_and_tag(image_reference: &str) -> Option<(&str, &str)> {
+    let without_digest = image_reference
+        .split_once('@')
+        .map(|(image, _)| image)
+        .unwrap_or(image_reference);
+    let last_slash = without_digest
+        .rfind('/')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let tag_index = without_digest[last_slash..].rfind(':')? + last_slash;
+    let tag = without_digest.get(tag_index + 1..)?;
+
+    (!tag.is_empty()).then_some((&without_digest[..tag_index], tag))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +169,27 @@ mod tests {
         // Second FROM - final stage
         assert_eq!(instructions[2].stage_index, 1);
         assert!(instructions[2].is_final_stage);
+    }
+
+    #[test]
+    fn test_docker_from_image_reference_skips_platform_flags() {
+        let reference =
+            docker_from_image_reference("--platform=linux/amd64 node:20-alpine AS build")
+                .expect("docker image reference should be parsed");
+
+        assert_eq!(reference.prefix, "--platform=linux/amd64 ");
+        assert_eq!(reference.image, "node");
+        assert_eq!(reference.tag, "20-alpine");
+        assert_eq!(reference.token, "node:20-alpine");
+        assert_eq!(reference.suffix, " AS build");
+    }
+
+    #[test]
+    fn test_docker_from_image_reference_handles_registry_ports() {
+        let reference = docker_from_image_reference("localhost:5000/node:20-alpine")
+            .expect("docker image reference should be parsed");
+
+        assert_eq!(reference.image, "localhost:5000/node");
+        assert_eq!(reference.tag, "20-alpine");
     }
 }

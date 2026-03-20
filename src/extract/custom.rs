@@ -1,19 +1,108 @@
-use regex::Regex;
 use super::Extractor;
-use crate::config::CustomExtractorConfig;
+use crate::config::{CustomExtractorConfig, CustomSourceConfig};
+use crate::model::ParseDiagnostic;
 use crate::model::assertion::{Authority, ConfigAssertion, SourceLocation};
 use crate::model::concept::{ConceptCategory, SemanticConcept};
 use crate::model::semantic_type::{self, SemanticType};
-use crate::parse::{FileContent, ParsedFile};
+use crate::parse::ParsedFile;
+use regex::Regex;
+use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::sync::Arc;
 
-/// A dynamically-defined extractor loaded from `.conflic.toml`.
+#[path = "custom/compile.rs"]
+mod compile_impl;
+#[path = "custom/extract_impl.rs"]
+mod extract_impl;
+#[path = "custom/navigation.rs"]
+mod navigation_impl;
+
+use compile_impl::{compile_source, config_diagnostic};
+#[cfg(test)]
+use navigation_impl::{apply_pattern, navigate_json, navigate_toml, navigate_yaml};
+
+pub const CUSTOM_EXTRACTOR_CONFIG_RULE_ID: &str = "CONFIG001";
+const COMPILED_CONFIG_FILE_FALLBACK: &str = ".conflic.toml";
+
+#[derive(Clone)]
 pub struct CustomExtractor {
     config: CustomExtractorConfig,
+    sources: Vec<CompiledCustomSource>,
+}
+
+#[derive(Clone)]
+struct CompiledCustomSource {
+    config: CustomSourceConfig,
+    normalized_file: String,
+    filename_glob: Option<Arc<globset::GlobMatcher>>,
+    path_glob: Option<Arc<globset::GlobMatcher>>,
+    relative_path_glob: Option<Arc<globset::GlobMatcher>>,
+    pattern_regex: Option<Regex>,
+}
+
+impl fmt::Debug for CustomExtractor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CustomExtractor")
+            .field("concept", &self.config.concept)
+            .field("display_name", &self.config.display_name)
+            .field("source_count", &self.sources.len())
+            .finish()
+    }
+}
+
+pub fn custom_config_hash(configs: &[CustomExtractorConfig]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    configs.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn compile_custom_extractors(
+    configs: &[CustomExtractorConfig],
+    config_path: Option<&Path>,
+) -> (Vec<CustomExtractor>, Vec<ParseDiagnostic>) {
+    let mut extractors = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for config in configs {
+        let (extractor, extractor_diagnostics) = CustomExtractor::new(config.clone(), config_path);
+        diagnostics.extend(extractor_diagnostics);
+        if let Some(extractor) = extractor {
+            extractors.push(extractor);
+        }
+    }
+
+    (extractors, diagnostics)
 }
 
 impl CustomExtractor {
-    pub fn new(config: CustomExtractorConfig) -> Self {
-        Self { config }
+    pub fn new(
+        config: CustomExtractorConfig,
+        config_path: Option<&Path>,
+    ) -> (Option<Self>, Vec<ParseDiagnostic>) {
+        let mut diagnostics = Vec::new();
+        let mut sources = Vec::new();
+
+        for (index, source) in config.source.iter().cloned().enumerate() {
+            match compile_source(source, &config, index, config_path) {
+                Ok(source) => sources.push(source),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+
+        if sources.is_empty() {
+            diagnostics.push(config_diagnostic(
+                config_path,
+                format!(
+                    "Custom extractor '{}' has no valid sources after validation",
+                    config.concept
+                ),
+            ));
+            return (None, diagnostics);
+        }
+
+        (Some(Self { config, sources }), diagnostics)
     }
 
     fn concept(&self) -> SemanticConcept {
@@ -36,197 +125,14 @@ impl CustomExtractor {
     fn parse_value(&self, raw: &str) -> SemanticType {
         match self.config.value_type.as_str() {
             "version" => SemanticType::Version(semantic_type::parse_version(raw)),
-            "port" => {
-                if let Some(port) = semantic_type::parse_port(raw) {
-                    SemanticType::Port(port)
-                } else {
-                    SemanticType::StringValue(raw.to_string())
-                }
-            }
-            "boolean" => {
-                if let Some(b) = semantic_type::normalize_boolean(raw) {
-                    SemanticType::Boolean(b)
-                } else {
-                    SemanticType::StringValue(raw.to_string())
-                }
-            }
+            "port" => semantic_type::parse_port(raw)
+                .map(SemanticType::Port)
+                .unwrap_or_else(|| SemanticType::StringValue(raw.to_string())),
+            "boolean" => semantic_type::normalize_boolean(raw)
+                .map(SemanticType::Boolean)
+                .unwrap_or_else(|| SemanticType::StringValue(raw.to_string())),
             _ => SemanticType::StringValue(raw.to_string()),
         }
-    }
-
-    fn extract_from_source(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-    ) -> Vec<ConfigAssertion> {
-        let authority = match source.authority.as_str() {
-            "enforced" => Authority::Enforced,
-            "declared" => Authority::Declared,
-            _ => Authority::Advisory,
-        };
-
-        match source.format.as_str() {
-            "json" => self.extract_from_json(source, file, authority),
-            "yaml" => self.extract_from_yaml(source, file, authority),
-            "toml" => self.extract_from_toml(source, file, authority),
-            "env" => self.extract_from_env(source, file, authority),
-            "plain" => self.extract_from_plain(file, authority),
-            "dockerfile" => self.extract_from_dockerfile(source, file, authority),
-            _ => vec![],
-        }
-    }
-
-    fn extract_from_json(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::Json(ref value) = file.content {
-            if let Some(ref path) = source.path {
-                if let Some(raw) = navigate_json(value, path) {
-                    let raw = apply_pattern(&raw, source.pattern.as_deref());
-                    if let Some(raw) = raw {
-                        return vec![self.make_assertion(&raw, path, file, authority)];
-                    }
-                }
-            }
-        }
-        vec![]
-    }
-
-    fn extract_from_yaml(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::Yaml(ref value) = file.content {
-            if let Some(ref path) = source.path {
-                if let Some(raw) = navigate_yaml(value, path) {
-                    let raw = apply_pattern(&raw, source.pattern.as_deref());
-                    if let Some(raw) = raw {
-                        return vec![self.make_assertion(&raw, path, file, authority)];
-                    }
-                }
-            }
-        }
-        vec![]
-    }
-
-    fn extract_from_toml(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::Toml(ref value) = file.content {
-            if let Some(ref path) = source.path {
-                if let Some(raw) = navigate_toml(value, path) {
-                    let raw = apply_pattern(&raw, source.pattern.as_deref());
-                    if let Some(raw) = raw {
-                        return vec![self.make_assertion(&raw, path, file, authority)];
-                    }
-                }
-            }
-        }
-        vec![]
-    }
-
-    fn extract_from_env(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::Env(ref entries) = file.content {
-            if let Some(ref key) = source.key {
-                for entry in entries {
-                    if entry.key == *key {
-                        let raw = apply_pattern(&entry.value, source.pattern.as_deref());
-                        if let Some(raw) = raw {
-                            let value = self.parse_value(&raw);
-                            let loc = SourceLocation {
-                                file: file.path.clone(),
-                                line: entry.line,
-                                column: 0,
-                                key_path: key.clone(),
-                            };
-                            return vec![ConfigAssertion::new(
-                                self.concept(),
-                                value,
-                                raw,
-                                loc,
-                                authority,
-                                self.id(),
-                            )];
-                        }
-                    }
-                }
-            }
-        }
-        vec![]
-    }
-
-    fn extract_from_plain(
-        &self,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::PlainText(ref text) = file.content {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                let value = self.parse_value(trimmed);
-                let loc = SourceLocation {
-                    file: file.path.clone(),
-                    line: 1,
-                    column: 0,
-                    key_path: String::new(),
-                };
-                return vec![ConfigAssertion::new(
-                    self.concept(),
-                    value,
-                    trimmed.to_string(),
-                    loc,
-                    authority,
-                    self.id(),
-                )];
-            }
-        }
-        vec![]
-    }
-
-    fn extract_from_dockerfile(
-        &self,
-        source: &crate::config::CustomSourceConfig,
-        file: &ParsedFile,
-        authority: Authority,
-    ) -> Vec<ConfigAssertion> {
-        if let FileContent::Dockerfile(ref instructions) = file.content {
-            for instr in instructions {
-                if instr.instruction == "FROM" {
-                    let raw = apply_pattern(&instr.arguments, source.pattern.as_deref());
-                    if let Some(raw) = raw {
-                        let value = self.parse_value(&raw);
-                        let loc = SourceLocation {
-                            file: file.path.clone(),
-                            line: instr.line,
-                            column: 0,
-                            key_path: "FROM".to_string(),
-                        };
-                        return vec![ConfigAssertion::new(
-                            self.concept(),
-                            value,
-                            raw,
-                            loc,
-                            authority,
-                            self.id(),
-                        )];
-                    }
-                }
-            }
-        }
-        vec![]
     }
 
     fn make_assertion(
@@ -237,14 +143,25 @@ impl CustomExtractor {
         authority: Authority,
     ) -> ConfigAssertion {
         let value = self.parse_value(raw);
-        let line = crate::parse::source_location::find_line_for_key(&file.raw_text, key_path);
-        let loc = SourceLocation {
+        let line = crate::parse::source_location::find_line_for_key_value(
+            &file.raw_text,
+            key_path.rsplit('.').next().unwrap_or(key_path),
+            raw,
+        );
+        let location = SourceLocation {
             file: file.path.clone(),
             line,
             column: 0,
             key_path: key_path.to_string(),
         };
-        ConfigAssertion::new(self.concept(), value, raw.to_string(), loc, authority, self.id())
+        ConfigAssertion::new(
+            self.concept(),
+            value,
+            raw.to_string(),
+            location,
+            authority,
+            self.id(),
+        )
     }
 }
 
@@ -258,90 +175,38 @@ impl Extractor for CustomExtractor {
     }
 
     fn relevant_filenames(&self) -> Vec<&str> {
-        self.config
-            .source
+        self.sources
             .iter()
-            .map(|s| s.file.as_str())
+            .map(|source| source.config.file.as_str())
             .collect()
+    }
+
+    fn matches_file(&self, filename: &str) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.matches_filename(filename))
+    }
+
+    fn matches_path(&self, filename: &str, path: &Path) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source.matches_path(filename, path))
     }
 
     fn extract(&self, file: &ParsedFile) -> Vec<ConfigAssertion> {
         let filename = file
             .path
             .file_name()
-            .and_then(|n| n.to_str())
+            .and_then(|name| name.to_str())
             .unwrap_or("");
 
         let mut results = Vec::new();
-        for source in &self.config.source {
-            if filename == source.file || filename.starts_with(&source.file) {
+        for source in &self.sources {
+            if source.matches_path(filename, &file.path) {
                 results.extend(self.extract_from_source(source, file));
             }
         }
         results
-    }
-}
-
-// --- Dot-path navigation helpers ---
-
-/// Navigate a JSON value by dot-separated path (e.g., "services.redis.image").
-fn navigate_json(value: &serde_json::Value, path: &str) -> Option<String> {
-    let mut current = value;
-    for key in path.split('.') {
-        current = current.get(key)?;
-    }
-    match current {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        _ => Some(current.to_string()),
-    }
-}
-
-/// Navigate a YAML value by dot-separated path.
-fn navigate_yaml(value: &serde_yml::Value, path: &str) -> Option<String> {
-    let mut current = value;
-    for key in path.split('.') {
-        current = current.get(key)?;
-    }
-    match current {
-        serde_yml::Value::String(s) => Some(s.clone()),
-        serde_yml::Value::Number(n) => Some(n.to_string()),
-        serde_yml::Value::Bool(b) => Some(b.to_string()),
-        _ => Some(format!("{:?}", current)),
-    }
-}
-
-/// Navigate a TOML value by dot-separated path.
-fn navigate_toml(value: &toml::Value, path: &str) -> Option<String> {
-    let mut current = value;
-    for key in path.split('.') {
-        current = current.get(key)?;
-    }
-    match current {
-        toml::Value::String(s) => Some(s.clone()),
-        toml::Value::Integer(n) => Some(n.to_string()),
-        toml::Value::Float(n) => Some(n.to_string()),
-        toml::Value::Boolean(b) => Some(b.to_string()),
-        _ => Some(current.to_string()),
-    }
-}
-
-/// Apply an optional regex pattern to extract a capture group.
-/// If pattern is None, returns the raw value unchanged.
-/// If pattern has a capture group, returns group 1.
-fn apply_pattern(raw: &str, pattern: Option<&str>) -> Option<String> {
-    match pattern {
-        None => Some(raw.to_string()),
-        Some(pat) => {
-            let re = Regex::new(pat).ok()?;
-            let caps = re.captures(raw)?;
-            if let Some(m) = caps.get(1) {
-                Some(m.as_str().to_string())
-            } else {
-                Some(caps.get(0)?.as_str().to_string())
-            }
-        }
     }
 }
 
@@ -367,9 +232,8 @@ mod tests {
 
     #[test]
     fn test_navigate_yaml() {
-        let yaml: serde_yml::Value = serde_yml::from_str(
-            "services:\n  redis:\n    image: redis:7.2\n"
-        ).unwrap();
+        let yaml: crate::parse::YamlValue =
+            serde_saphyr::from_str("services:\n  redis:\n    image: redis:7.2\n").unwrap();
         assert_eq!(
             navigate_yaml(&yaml, "services.redis.image"),
             Some("redis:7.2".to_string())
@@ -378,30 +242,188 @@ mod tests {
 
     #[test]
     fn test_navigate_toml() {
-        let toml_val: toml::Value = toml::from_str(
-            "[services.redis]\nimage = \"redis:7.2\"\n"
-        ).unwrap();
+        let toml_value: toml::Value =
+            toml::from_str("[services.redis]\nimage = \"redis:7.2\"\n").unwrap();
         assert_eq!(
-            navigate_toml(&toml_val, "services.redis.image"),
+            navigate_toml(&toml_value, "services.redis.image"),
             Some("redis:7.2".to_string())
         );
     }
 
     #[test]
     fn test_apply_pattern() {
-        assert_eq!(apply_pattern("redis:7.2", None), Some("redis:7.2".to_string()));
         assert_eq!(
-            apply_pattern("redis:7.2", Some("redis:(.*)")),
+            apply_pattern("redis:7.2", None),
+            Some("redis:7.2".to_string())
+        );
+        assert_eq!(
+            apply_pattern("redis:7.2", Some(&Regex::new("redis:(.*)").unwrap())),
             Some("7.2".to_string())
         );
-        assert_eq!(apply_pattern("redis:7.2", Some("nginx:(.*)")), None);
+        assert_eq!(
+            apply_pattern("redis:7.2", Some(&Regex::new("nginx:(.*)").unwrap())),
+            None
+        );
     }
 
     #[test]
     fn test_apply_pattern_no_capture_group() {
         assert_eq!(
-            apply_pattern("hello world", Some("hello")),
+            apply_pattern("hello world", Some(&Regex::new("hello").unwrap())),
             Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_source_matches_filename_glob() {
+        let source = compile_source(
+            CustomSourceConfig {
+                file: "*.json".into(),
+                format: "json".into(),
+                path: Some("custom.redis".into()),
+                key: None,
+                pattern: None,
+                authority: "declared".into(),
+            },
+            &CustomExtractorConfig {
+                concept: "redis-version".into(),
+                display_name: "Redis Version".into(),
+                category: "runtime-version".into(),
+                value_type: "version".into(),
+                source: vec![],
+            },
+            0,
+            Some(Path::new(".conflic.toml")),
+        )
+        .unwrap();
+
+        assert!(source.matches_filename("package.json"));
+        assert!(!source.matches_filename("Dockerfile"));
+    }
+
+    #[test]
+    fn test_source_matches_path_relative_glob() {
+        let source = compile_source(
+            CustomSourceConfig {
+                file: "configs/*.json".into(),
+                format: "json".into(),
+                path: Some("custom.redis".into()),
+                key: None,
+                pattern: None,
+                authority: "declared".into(),
+            },
+            &CustomExtractorConfig {
+                concept: "redis-version".into(),
+                display_name: "Redis Version".into(),
+                category: "runtime-version".into(),
+                value_type: "version".into(),
+                source: vec![],
+            },
+            0,
+            Some(Path::new(".conflic.toml")),
+        )
+        .unwrap();
+
+        let path = Path::new("C:/repo/configs/app.json");
+        assert!(source.matches_path("app.json", path));
+    }
+
+    #[test]
+    fn test_compile_custom_extractor_reports_invalid_regex_as_diagnostic() {
+        let config = CustomExtractorConfig {
+            concept: "redis-version".into(),
+            display_name: "Redis Version".into(),
+            category: "runtime-version".into(),
+            value_type: "version".into(),
+            source: vec![CustomSourceConfig {
+                file: "*.json".into(),
+                format: "json".into(),
+                path: Some("custom.redis".into()),
+                key: None,
+                pattern: Some("redis:(".into()),
+                authority: "declared".into(),
+            }],
+        };
+
+        let (extractors, diagnostics) =
+            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+
+        assert!(
+            extractors.is_empty(),
+            "invalid sources should not be compiled"
+        );
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0].rule_id, CUSTOM_EXTRACTOR_CONFIG_RULE_ID);
+        assert!(
+            diagnostics[0].message.contains("invalid regex pattern"),
+            "expected regex validation diagnostic, got {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_compile_custom_extractor_reports_invalid_glob_as_diagnostic() {
+        let config = CustomExtractorConfig {
+            concept: "redis-version".into(),
+            display_name: "Redis Version".into(),
+            category: "runtime-version".into(),
+            value_type: "version".into(),
+            source: vec![CustomSourceConfig {
+                file: "[*.json".into(),
+                format: "json".into(),
+                path: Some("custom.redis".into()),
+                key: None,
+                pattern: None,
+                authority: "declared".into(),
+            }],
+        };
+
+        let (extractors, diagnostics) =
+            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+
+        assert!(
+            extractors.is_empty(),
+            "invalid sources should not be compiled"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("invalid file glob")),
+            "expected glob validation diagnostic, got {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_compile_custom_extractor_reports_invalid_format_as_diagnostic() {
+        let config = CustomExtractorConfig {
+            concept: "redis-version".into(),
+            display_name: "Redis Version".into(),
+            category: "runtime-version".into(),
+            value_type: "version".into(),
+            source: vec![CustomSourceConfig {
+                file: "docker-compose.yml".into(),
+                format: "yamll".into(),
+                path: Some("services.redis.image".into()),
+                key: None,
+                pattern: Some("redis:(.*)".into()),
+                authority: "declared".into(),
+            }],
+        };
+
+        let (extractors, diagnostics) =
+            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+
+        assert!(
+            extractors.is_empty(),
+            "invalid formats should not produce compiled extractors"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("invalid source format")),
+            "expected source format validation diagnostic, got {:?}",
+            diagnostics
         );
     }
 }

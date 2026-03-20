@@ -6,11 +6,13 @@ pub mod node_version;
 pub mod port;
 pub mod python_version;
 pub mod ruby_version;
+mod runtime_version;
 pub mod ts_strict;
 
 use crate::config::ConflicConfig;
-use crate::model::ConfigAssertion;
+use crate::model::{ConfigAssertion, ParseDiagnostic};
 use crate::parse::ParsedFile;
+use std::path::Path;
 
 /// Trait for extracting semantic assertions from parsed config files.
 pub trait Extractor: Send + Sync {
@@ -20,21 +22,53 @@ pub trait Extractor: Send + Sync {
     /// Human-readable description.
     fn description(&self) -> &str;
 
+    /// Semantic concept IDs this extractor can emit.
+    fn concept_ids(&self) -> Vec<String> {
+        inferred_concept_ids(self.id())
+    }
+
     /// Filenames this extractor cares about (exact matches or prefix matches).
     fn relevant_filenames(&self) -> Vec<&str>;
 
     /// Whether this extractor should process a file given its filename.
     fn matches_file(&self, filename: &str) -> bool {
-        for pattern in self.relevant_filenames() {
-            if filename == pattern || filename.starts_with(pattern) {
-                return true;
-            }
-        }
-        false
+        self.relevant_filenames()
+            .into_iter()
+            .any(|pattern| filename == pattern || filename.starts_with(pattern))
+    }
+
+    /// Whether this extractor should process a file given both filename and path.
+    fn matches_path(&self, filename: &str, _path: &Path) -> bool {
+        self.matches_file(filename)
     }
 
     /// Extract assertions from a parsed file.
     fn extract(&self, file: &ParsedFile) -> Vec<ConfigAssertion>;
+}
+
+fn inferred_concept_ids(extractor_id: &str) -> Vec<String> {
+    const EXTRACTOR_PREFIXES: [(&str, &str); 8] = [
+        ("node-version-", "node-version"),
+        ("python-version-", "python-version"),
+        ("go-version-", "go-version"),
+        ("java-version-", "java-version"),
+        ("ruby-version-", "ruby-version"),
+        ("dotnet-version-", "dotnet-version"),
+        ("port-", "app-port"),
+        ("ts-strict-", "ts-strict-mode"),
+    ];
+
+    let concept_id = EXTRACTOR_PREFIXES
+        .iter()
+        .find_map(|(prefix, concept_id)| extractor_id.starts_with(prefix).then_some(*concept_id))
+        .unwrap_or(extractor_id);
+
+    vec![concept_id.to_string()]
+}
+
+pub struct ExtractorBuild {
+    pub extractors: Vec<Box<dyn Extractor>>,
+    pub diagnostics: Vec<ParseDiagnostic>,
 }
 
 /// Create the default set of extractors.
@@ -81,10 +115,16 @@ pub fn default_extractors() -> Vec<Box<dyn Extractor>> {
 }
 
 /// Build extractors from defaults plus any custom extractors defined in config.
-pub fn build_extractors(config: &ConflicConfig) -> Vec<Box<dyn Extractor>> {
+pub fn build_extractors(config: &ConflicConfig) -> ExtractorBuild {
     let mut extractors = default_extractors();
-    for custom_config in &config.custom_extractor {
-        extractors.push(Box::new(custom::CustomExtractor::new(custom_config.clone())));
+    let (compiled_custom_extractors, diagnostics) = config.compiled_custom_extractors();
+
+    for custom_extractor in compiled_custom_extractors {
+        extractors.push(Box::new(custom_extractor));
     }
-    extractors
+
+    ExtractorBuild {
+        extractors,
+        diagnostics,
+    }
 }

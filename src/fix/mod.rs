@@ -1,11 +1,53 @@
 pub mod patcher;
 
+mod planner;
+mod render;
+
 use crate::model::*;
 use crate::parse::FileFormat;
 use std::path::PathBuf;
 
+use planner::{all_values_mutually_equivalent, build_fix_operation, values_equivalent};
+
+/// A safe, format-aware edit operation derived from a specific extractor target.
+#[derive(Debug, Clone)]
+pub enum FixOperation {
+    ReplaceWholeFileValue {
+        value: String,
+    },
+    ReplaceEnvValue {
+        key: String,
+        value: String,
+    },
+    ReplaceJsonString {
+        path: Vec<String>,
+        value: String,
+    },
+    ReplaceGoModVersion {
+        value: String,
+    },
+    ReplaceToolVersionsValue {
+        value: String,
+    },
+    ReplaceGemfileRubyVersion {
+        value: String,
+    },
+    ReplaceTextRange {
+        start: usize,
+        end: usize,
+        value: String,
+    },
+    ReplaceDockerFromArguments {
+        arguments: String,
+    },
+    ReplaceDockerExposeToken {
+        current: String,
+        value: String,
+    },
+}
+
 /// A proposed fix for a single file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixProposal {
     pub file: PathBuf,
     pub concept: SemanticConcept,
@@ -16,6 +58,7 @@ pub struct FixProposal {
     pub authority_winner: String,
     pub winner_file: PathBuf,
     pub format: FileFormat,
+    pub operation: FixOperation,
 }
 
 /// Result of analyzing contradictions for fixability.
@@ -38,84 +81,85 @@ pub fn plan_fixes(result: &ScanResult) -> FixPlan {
     let mut proposals = Vec::new();
     let mut unfixable = Vec::new();
 
-    for cr in &result.concept_results {
-        if cr.findings.is_empty() || cr.assertions.len() < 2 {
+    for concept_result in &result.concept_results {
+        if concept_result.findings.is_empty() || concept_result.assertions.len() < 2 {
             continue;
         }
 
-        // Find the winner: highest authority, and among ties, prefer non-matrix assertions
-        let winner = cr
-            .assertions
-            .iter()
-            .max_by(|a, b| {
-                a.authority
-                    .cmp(&b.authority)
-                    .then_with(|| {
-                        // Prefer non-matrix values as the canonical source
-                        b.is_matrix.cmp(&a.is_matrix)
-                    })
-            });
-
-        let winner = match winner {
-            Some(w) => w,
+        let winner = match concept_result.assertions.iter().max_by(|left, right| {
+            left.authority
+                .cmp(&right.authority)
+                .then_with(|| right.is_matrix.cmp(&left.is_matrix))
+        }) {
+            Some(winner) => winner,
             None => continue,
         };
 
-        // Check if we have multiple assertions at the same highest authority with different values
-        let top_authority_assertions: Vec<&ConfigAssertion> = cr
+        let top_authority_assertions: Vec<&ConfigAssertion> = concept_result
             .assertions
             .iter()
-            .filter(|a| a.authority == winner.authority)
+            .filter(|assertion| assertion.authority == winner.authority)
             .collect();
 
-        let all_same_value = top_authority_assertions
-            .windows(2)
-            .all(|w| values_equivalent(&w[0].value, &w[1].value));
-
-        if !all_same_value && top_authority_assertions.len() > 1 {
+        if !all_values_mutually_equivalent(&top_authority_assertions)
+            && top_authority_assertions.len() > 1
+        {
             unfixable.push(UnfixableItem {
-                concept: cr.concept.clone(),
+                concept: concept_result.concept.clone(),
                 reason: format!(
-                    "Multiple {} assertions disagree — manual resolution needed",
+                    "Multiple {} assertions disagree; manual resolution needed",
                     winner.authority
                 ),
             });
             continue;
         }
 
-        // Propose fixes for lower-authority assertions that differ
-        for assertion in &cr.assertions {
-            if std::ptr::eq(assertion, winner) {
+        for assertion in &concept_result.assertions {
+            if std::ptr::eq(assertion, winner) || values_equivalent(&assertion.value, &winner.value)
+            {
                 continue;
             }
-
-            if values_equivalent(&assertion.value, &winner.value) {
-                continue;
-            }
-
-            // Determine the proposed replacement value
-            let proposed_raw = compute_proposed_value(winner, assertion);
 
             let filename = assertion
                 .source
                 .file
                 .file_name()
-                .and_then(|n| n.to_str())
+                .and_then(|name| name.to_str())
                 .unwrap_or("");
-            let format =
-                crate::parse::detect_format(filename, &assertion.source.file);
+            let format = crate::parse::detect_format(filename, &assertion.source.file);
 
-            proposals.push(FixProposal {
-                file: assertion.source.file.clone(),
-                concept: cr.concept.clone(),
-                current_raw: assertion.raw_value.clone(),
-                proposed_raw,
-                key_path: assertion.source.key_path.clone(),
-                line: assertion.source.line,
-                authority_winner: format!("{} ({})", winner.authority, winner.source.file.display()),
-                winner_file: winner.source.file.clone(),
-                format,
-            });
+            match build_fix_operation(winner, assertion, format.clone()) {
+                Ok((proposed_raw, operation)) => {
+                    proposals.push(FixProposal {
+                        file: assertion.source.file.clone(),
+                        concept: concept_result.concept.clone(),
+                        current_raw: assertion.raw_value.clone(),
+                        proposed_raw,
+                        key_path: assertion.source.key_path.clone(),
+                        line: assertion.source.line,
+                        authority_winner: format!(
+                            "{} ({})",
+                            winner.authority,
+                            winner.source.file.display()
+                        ),
+                        winner_file: winner.source.file.clone(),
+                        format,
+                        operation,
+                    });
+                }
+                Err(reason) => {
+                    unfixable.push(UnfixableItem {
+                        concept: concept_result.concept.clone(),
+                        reason: format!(
+                            "{} [{}:{}]: {}",
+                            assertion.source.file.display(),
+                            assertion.source.line,
+                            assertion.extractor_id,
+                            reason
+                        ),
+                    });
+                }
+            }
         }
     }
 
@@ -125,59 +169,217 @@ pub fn plan_fixes(result: &ScanResult) -> FixPlan {
     }
 }
 
-/// Determine if two semantic values are equivalent (no fix needed).
-fn values_equivalent(a: &SemanticType, b: &SemanticType) -> bool {
-    use crate::solve::Compatibility;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::concept::{ConceptCategory, SemanticConcept};
+    use std::path::PathBuf;
 
-    match (a, b) {
-        (SemanticType::Version(va), SemanticType::Version(vb)) => {
-            matches!(
-                crate::solve::version::versions_compatible(va, vb),
-                Compatibility::Compatible
-            )
+    fn concept() -> SemanticConcept {
+        SemanticConcept {
+            id: "node-version".into(),
+            display_name: "Node.js Version".into(),
+            category: ConceptCategory::RuntimeVersion,
         }
-        (SemanticType::Port(pa), SemanticType::Port(pb)) => {
-            matches!(
-                crate::solve::port::ports_compatible(pa, pb),
-                Compatibility::Compatible
-            )
+    }
+
+    fn assertion(
+        extractor_id: &str,
+        file: &str,
+        raw_value: &str,
+        value: SemanticType,
+        authority: Authority,
+    ) -> ConfigAssertion {
+        ConfigAssertion {
+            concept: concept(),
+            value,
+            raw_value: raw_value.into(),
+            source: SourceLocation {
+                file: PathBuf::from(file),
+                line: 1,
+                column: 0,
+                key_path: String::new(),
+            },
+            span: None,
+            authority,
+            extractor_id: extractor_id.into(),
+            is_matrix: false,
         }
-        (SemanticType::Boolean(a), SemanticType::Boolean(b)) => a == b,
-        (SemanticType::StringValue(a), SemanticType::StringValue(b)) => a == b,
-        (SemanticType::Number(a), SemanticType::Number(b)) => (a - b).abs() < f64::EPSILON,
-        _ => false,
+    }
+
+    #[test]
+    fn test_plan_fixes_refuses_range_for_exact_version_file() {
+        let winner = assertion(
+            "node-version-package-json",
+            "package.json",
+            "^20",
+            SemanticType::Version(parse_version("^20")),
+            Authority::Declared,
+        );
+        let target = assertion(
+            "node-version-nvmrc",
+            ".nvmrc",
+            "18",
+            SemanticType::Version(parse_version("18")),
+            Authority::Advisory,
+        );
+
+        let result = ScanResult {
+            concept_results: vec![ConceptResult {
+                concept: concept(),
+                assertions: vec![winner, target],
+                findings: vec![Finding {
+                    severity: Severity::Error,
+                    left: assertion(
+                        "node-version-package-json",
+                        "package.json",
+                        "^20",
+                        SemanticType::Version(parse_version("^20")),
+                        Authority::Declared,
+                    ),
+                    right: assertion(
+                        "node-version-nvmrc",
+                        ".nvmrc",
+                        "18",
+                        SemanticType::Version(parse_version("18")),
+                        Authority::Advisory,
+                    ),
+                    explanation: "contradiction".into(),
+                    rule_id: "TEST001".into(),
+                }],
+            }],
+            parse_diagnostics: vec![],
+        };
+
+        let plan = plan_fixes(&result);
+        assert!(plan.proposals.is_empty(), "unsafe fix should be rejected");
+        assert_eq!(plan.unfixable.len(), 1);
+        assert!(
+            plan.unfixable[0]
+                .reason
+                .contains("not an exact version token"),
+            "expected exact-version rejection, got {}",
+            plan.unfixable[0].reason
+        );
+    }
+
+    #[test]
+    fn test_plan_fixes_refuses_ambiguous_top_authority_ranges() {
+        let left = assertion(
+            "node-version-package-json",
+            "packages/a/package.json",
+            ">=18 <20",
+            SemanticType::Version(parse_version(">=18 <20")),
+            Authority::Declared,
+        );
+        let middle = assertion(
+            "node-version-package-json",
+            "packages/b/package.json",
+            ">=19 <21",
+            SemanticType::Version(parse_version(">=19 <21")),
+            Authority::Declared,
+        );
+        let right = assertion(
+            "node-version-package-json",
+            "packages/c/package.json",
+            ">=20 <22",
+            SemanticType::Version(parse_version(">=20 <22")),
+            Authority::Declared,
+        );
+
+        let result = ScanResult {
+            concept_results: vec![ConceptResult {
+                concept: concept(),
+                assertions: vec![left.clone(), middle, right.clone()],
+                findings: vec![Finding {
+                    severity: Severity::Warning,
+                    left,
+                    right,
+                    explanation:
+                        "ranges \">=18.0.0 <20.0.0\" and \">=20.0.0 <22.0.0\" do not overlap".into(),
+                    rule_id: "VER001".into(),
+                }],
+            }],
+            parse_diagnostics: vec![],
+        };
+
+        let plan = plan_fixes(&result);
+        assert!(
+            plan.proposals.is_empty(),
+            "ambiguous top-authority ranges should not produce auto-fix proposals: {:?}",
+            plan.proposals
+        );
+        assert_eq!(plan.unfixable.len(), 1);
+        assert!(
+            plan.unfixable[0]
+                .reason
+                .contains("Multiple declared assertions disagree"),
+            "expected explicit ambiguity warning, got {:?}",
+            plan.unfixable
+        );
+    }
+
+    #[test]
+    fn test_plan_fixes_refuses_overlapping_top_authority_ranges() {
+        let left = assertion(
+            "node-version-ci",
+            ".github/workflows/ci-a.yml",
+            ">=18 <20",
+            SemanticType::Version(parse_version(">=18 <20")),
+            Authority::Enforced,
+        );
+        let right = assertion(
+            "node-version-ci",
+            ".github/workflows/ci-b.yml",
+            ">=19 <21",
+            SemanticType::Version(parse_version(">=19 <21")),
+            Authority::Enforced,
+        );
+        let target = assertion(
+            "node-version-package-json",
+            "package.json",
+            "22",
+            SemanticType::Version(parse_version("22")),
+            Authority::Declared,
+        );
+
+        let result = ScanResult {
+            concept_results: vec![ConceptResult {
+                concept: concept(),
+                assertions: vec![left.clone(), right.clone(), target.clone()],
+                findings: vec![
+                    Finding {
+                        severity: Severity::Error,
+                        left: left.clone(),
+                        right: target.clone(),
+                        explanation: "\"22.0.0\" does not satisfy \">=18.0.0 <20.0.0\"".into(),
+                        rule_id: "VER001".into(),
+                    },
+                    Finding {
+                        severity: Severity::Error,
+                        left: right,
+                        right: target,
+                        explanation: "\"22.0.0\" does not satisfy \">=19.0.0 <21.0.0\"".into(),
+                        rule_id: "VER001".into(),
+                    },
+                ],
+            }],
+            parse_diagnostics: vec![],
+        };
+
+        let plan = plan_fixes(&result);
+        assert!(
+            plan.proposals.is_empty(),
+            "overlapping top-authority ranges should not produce arbitrary auto-fix proposals: {:?}",
+            plan.proposals
+        );
+        assert_eq!(plan.unfixable.len(), 1);
+        assert!(
+            plan.unfixable[0]
+                .reason
+                .contains("Multiple enforced assertions disagree"),
+            "expected overlapping winners to be treated as ambiguous, got {:?}",
+            plan.unfixable
+        );
     }
 }
-
-/// Compute what the proposed raw value should be for an assertion to match the winner.
-fn compute_proposed_value(winner: &ConfigAssertion, target: &ConfigAssertion) -> String {
-    match (&winner.value, &target.value) {
-        (SemanticType::Version(winner_ver), SemanticType::Version(_)) => {
-            // For plain text files (.nvmrc, .python-version, .ruby-version),
-            // use the winner's exact version string
-            match winner_ver {
-                VersionSpec::Exact(v) => v.to_string(),
-                VersionSpec::Partial { major, minor, .. } => {
-                    if let Some(m) = minor {
-                        format!("{}.{}", major, m)
-                    } else {
-                        major.to_string()
-                    }
-                }
-                VersionSpec::DockerTag { version, .. } => {
-                    // Use the version part from the docker tag
-                    version.clone()
-                }
-                _ => winner.raw_value.clone(),
-            }
-        }
-        (SemanticType::Boolean(b), _) => b.to_string(),
-        (SemanticType::Port(p), _) => match p {
-            PortSpec::Single(port) => port.to_string(),
-            PortSpec::Range(start, end) => format!("{}-{}", start, end),
-            PortSpec::Mapping { container, .. } => container.to_string(),
-        },
-        _ => winner.raw_value.clone(),
-    }
-}
-

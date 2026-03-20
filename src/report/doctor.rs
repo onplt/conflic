@@ -65,10 +65,7 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
             if no_color {
                 out.push_str("    Extractors: (none matched)\n");
             } else {
-                out.push_str(&format!(
-                    "    Extractors: {}\n",
-                    "(none matched)".dimmed()
-                ));
+                out.push_str(&format!("    Extractors: {}\n", "(none matched)".dimmed()));
             }
         } else {
             out.push_str(&format!(
@@ -77,18 +74,22 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
             ));
         }
 
-        if let Some(ref err) = info.parse_error {
+        for diagnostic in &info.parse_diagnostics {
             if no_color {
-                out.push_str(&format!("    Parse error: {}\n", err));
+                out.push_str(&format!(
+                    "    Parse diagnostic [{}]: {}\n",
+                    diagnostic.severity, diagnostic.message
+                ));
             } else {
                 out.push_str(&format!(
-                    "    Parse error: {}\n",
-                    err.red()
+                    "    Parse diagnostic [{}]: {}\n",
+                    diagnostic.severity,
+                    diagnostic.message.red()
                 ));
             }
         }
 
-        if info.assertions.is_empty() && info.parse_error.is_none() {
+        if info.assertions.is_empty() && info.parse_diagnostics.is_empty() {
             if no_color {
                 out.push_str("    Assertions: (none extracted)\n");
             } else {
@@ -133,15 +134,8 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
                     "OK".green().to_string()
                 }
             } else {
-                let msg = format!(
-                    "{} contradiction(s)",
-                    cr.findings.len()
-                );
-                if no_color {
-                    msg
-                } else {
-                    msg.red().to_string()
-                }
+                let msg = format!("{} contradiction(s)", cr.findings.len());
+                if no_color { msg } else { msg.red().to_string() }
             };
 
             out.push_str(&format!(
@@ -154,10 +148,7 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
             for f in &cr.findings {
                 out.push_str(&format!(
                     "    {} {}: {} vs {}\n",
-                    f.severity,
-                    f.rule_id,
-                    f.left.raw_value,
-                    f.right.raw_value,
+                    f.severity, f.rule_id, f.left.raw_value, f.right.raw_value,
                 ));
             }
         }
@@ -174,11 +165,7 @@ pub fn render(report: &DoctorReport, no_color: bool) -> String {
     }
     out.push('\n');
 
-    let total_assertions: usize = report
-        .file_details
-        .iter()
-        .map(|f| f.assertions.len())
-        .sum();
+    let total_assertions: usize = report.file_details.iter().map(|f| f.assertions.len()).sum();
     let total_findings: usize = report
         .scan_result
         .concept_results
@@ -206,10 +193,10 @@ fn section(title: &str, no_color: bool) -> String {
 }
 
 fn simplify_path(path: &Path) -> String {
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(rel) = path.strip_prefix(&cwd) {
-            return rel.to_string_lossy().to_string();
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(rel) = path.strip_prefix(&cwd)
+    {
+        return rel.to_string_lossy().to_string();
     }
     path.to_string_lossy().to_string()
 }

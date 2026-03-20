@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use super::assertion::ConfigAssertion;
 use super::concept::SemanticConcept;
@@ -31,8 +32,23 @@ pub struct Finding {
     pub rule_id: String,
 }
 
+/// A diagnostic raised while reading or resolving configuration files.
+#[derive(Debug, Clone)]
+pub struct ParseDiagnostic {
+    pub severity: Severity,
+    pub file: PathBuf,
+    pub message: String,
+    pub rule_id: String,
+}
+
+impl fmt::Display for ParseDiagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.file.display(), self.message)
+    }
+}
+
 /// All comparison results for a single semantic concept.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConceptResult {
     pub concept: SemanticConcept,
     pub assertions: Vec<ConfigAssertion>,
@@ -40,10 +56,10 @@ pub struct ConceptResult {
 }
 
 /// The overall scan result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScanResult {
     pub concept_results: Vec<ConceptResult>,
-    pub parse_errors: Vec<String>,
+    pub parse_diagnostics: Vec<ParseDiagnostic>,
 }
 
 impl ScanResult {
@@ -53,6 +69,11 @@ impl ScanResult {
             .flat_map(|cr| &cr.findings)
             .filter(|f| f.severity == Severity::Error)
             .count()
+            + self
+                .parse_diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .count()
     }
 
     pub fn warning_count(&self) -> usize {
@@ -61,6 +82,11 @@ impl ScanResult {
             .flat_map(|cr| &cr.findings)
             .filter(|f| f.severity == Severity::Warning)
             .count()
+            + self
+                .parse_diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning)
+                .count()
     }
 
     pub fn info_count(&self) -> usize {
@@ -69,6 +95,11 @@ impl ScanResult {
             .flat_map(|cr| &cr.findings)
             .filter(|f| f.severity == Severity::Info)
             .count()
+            + self
+                .parse_diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Info)
+                .count()
     }
 
     pub fn has_findings_at_or_above(&self, min_severity: Severity) -> bool {
@@ -76,5 +107,9 @@ impl ScanResult {
             .iter()
             .flat_map(|cr| &cr.findings)
             .any(|f| f.severity >= min_severity)
+            || self
+                .parse_diagnostics
+                .iter()
+                .any(|d| d.severity >= min_severity)
     }
 }

@@ -36,7 +36,10 @@ pub enum PortSpec {
     Single(u16),
     Range(u16, u16),
     /// Docker-style host:container mapping
-    Mapping { host: u16, container: u16 },
+    Mapping {
+        host: u16,
+        container: u16,
+    },
 }
 
 impl fmt::Display for SemanticType {
@@ -56,13 +59,22 @@ impl fmt::Display for VersionSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VersionSpec::Exact(v) => write!(f, "{}", v),
-            VersionSpec::Partial { major, minor: Some(minor) } => write!(f, "{}.{}", major, minor),
+            VersionSpec::Partial {
+                major,
+                minor: Some(minor),
+            } => write!(f, "{}.{}", major, minor),
             VersionSpec::Partial { major, minor: None } => write!(f, "{}", major),
             VersionSpec::Range(r) => write!(f, "{}", r),
-            VersionSpec::DockerTag { version, variant: Some(var) } => {
+            VersionSpec::DockerTag {
+                version,
+                variant: Some(var),
+            } => {
                 write!(f, "{}-{}", version, var)
             }
-            VersionSpec::DockerTag { version, variant: None } => write!(f, "{}", version),
+            VersionSpec::DockerTag {
+                version,
+                variant: None,
+            } => write!(f, "{}", version),
             VersionSpec::Unparsed(s) => write!(f, "{}", s),
         }
     }
@@ -112,10 +124,7 @@ fn try_parse_partial(s: &str) -> Option<VersionSpec> {
     match parts.len() {
         1 => {
             let major = parts[0].parse::<u64>().ok()?;
-            Some(VersionSpec::Partial {
-                major,
-                minor: None,
-            })
+            Some(VersionSpec::Partial { major, minor: None })
         }
         2 => {
             let major = parts[0].parse::<u64>().ok()?;
@@ -149,22 +158,40 @@ fn try_parse_docker_tag(s: &str) -> Option<VersionSpec> {
 /// Parse a port specification string.
 pub fn parse_port(raw: &str) -> Option<PortSpec> {
     let trimmed = raw.trim();
+    let trimmed = match trimmed.rsplit_once('/') {
+        Some((value, suffix))
+            if suffix.eq_ignore_ascii_case("tcp") || suffix.eq_ignore_ascii_case("udp") =>
+        {
+            value
+        }
+        _ => trimmed,
+    };
 
-    // Docker mapping: "3000:8080"
-    if let Some((host, container)) = trimmed.split_once(':') {
-        let host = host.trim().parse::<u16>().ok()?;
-        let container = container.trim().parse::<u16>().ok()?;
-        return Some(PortSpec::Mapping { host, container });
+    // Docker mapping: "3000:8080", "8000-9000:80", "9090-9091:8080-8081"
+    let mut mapping_parts: Vec<&str> = trimmed.split(':').map(str::trim).collect();
+    if mapping_parts.len() >= 2 {
+        let container = parse_port_fragment(mapping_parts.pop()?)?;
+        let host = parse_port_fragment(mapping_parts.pop()?)?;
+        return match (host, container) {
+            (PortSpec::Single(host), PortSpec::Single(container)) => {
+                Some(PortSpec::Mapping { host, container })
+            }
+            (_, container) => Some(container),
+        };
     }
 
-    // Range: "3000-3005"
+    parse_port_fragment(trimmed)
+}
+
+fn parse_port_fragment(raw: &str) -> Option<PortSpec> {
+    let trimmed = raw.trim();
+
     if let Some((start, end)) = trimmed.split_once('-') {
         let start = start.trim().parse::<u16>().ok()?;
         let end = end.trim().parse::<u16>().ok()?;
         return Some(PortSpec::Range(start, end));
     }
 
-    // Single port
     let port = trimmed.parse::<u16>().ok()?;
     Some(PortSpec::Single(port))
 }
@@ -235,6 +262,35 @@ mod tests {
                 container: 8080
             })
         );
+    }
+
+    #[test]
+    fn test_parse_port_mapping_with_host_ip() {
+        assert_eq!(
+            parse_port("127.0.0.1:3000:8080"),
+            Some(PortSpec::Mapping {
+                host: 3000,
+                container: 8080
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_port_mapping_with_host_range() {
+        assert_eq!(parse_port("8000-9000:80"), Some(PortSpec::Single(80)));
+    }
+
+    #[test]
+    fn test_parse_port_mapping_with_container_range() {
+        assert_eq!(
+            parse_port("9090-9091:8080-8081"),
+            Some(PortSpec::Range(8080, 8081))
+        );
+    }
+
+    #[test]
+    fn test_parse_port_host_ip_without_host_port_is_rejected() {
+        assert_eq!(parse_port("127.0.0.1:8080"), None);
     }
 
     #[test]

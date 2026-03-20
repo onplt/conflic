@@ -1,8 +1,13 @@
 use super::{FixPlan, FixProposal};
-use crate::parse::FileFormat;
-use owo_colors::OwoColorize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+#[path = "patcher/apply.rs"]
+mod apply_impl;
+#[path = "patcher/atomic.rs"]
+mod atomic_impl;
+#[path = "patcher/preview.rs"]
+mod preview_impl;
 
 /// Result of applying fixes.
 #[derive(Debug)]
@@ -18,53 +23,71 @@ pub fn apply_fixes(plan: &FixPlan, create_backup: bool) -> ApplyResult {
     let mut files_backed_up = Vec::new();
     let mut errors: Vec<(PathBuf, String)> = Vec::new();
 
-    // Group proposals by file, then sort by line descending to avoid line-shift issues
     let mut by_file: HashMap<&Path, Vec<&FixProposal>> = HashMap::new();
     for proposal in &plan.proposals {
         by_file.entry(&proposal.file).or_default().push(proposal);
     }
 
     for (file_path, mut proposals) in by_file {
-        // Sort by line descending so we patch from bottom to top
-        proposals.sort_by(|a, b| b.line.cmp(&a.line));
+        proposals
+            .sort_by_key(|proposal| std::cmp::Reverse(apply_impl::proposal_start_offset(proposal)));
 
         let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
-            Err(e) => {
-                errors.push((file_path.to_path_buf(), format!("Failed to read: {}", e)));
+            Ok(content) => content,
+            Err(error) => {
+                errors.push((
+                    file_path.to_path_buf(),
+                    format!("Failed to read: {}", error),
+                ));
                 continue;
             }
         };
 
-        // Create backup
+        let mut modified = content.clone();
+        let mut failed = None;
+
+        for proposal in &proposals {
+            match apply_impl::apply_fix_to_content(&modified, proposal) {
+                Ok(next) => modified = next,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            }
+        }
+
+        if let Some(error) = failed {
+            errors.push((file_path.to_path_buf(), error));
+            continue;
+        }
+
+        if modified == content {
+            continue;
+        }
+
         if create_backup {
-            let backup_path = PathBuf::from(format!(
-                "{}.conflic.bak",
-                file_path.display()
-            ));
-            if let Err(e) = std::fs::write(&backup_path, &content) {
+            let canonical =
+                std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+            let backup_path = PathBuf::from(format!("{}.conflic.bak", canonical.display()));
+            if let Err(error) = atomic_impl::write_file_atomically(&backup_path, content.as_bytes())
+            {
                 errors.push((
                     file_path.to_path_buf(),
-                    format!("Failed to create backup: {}", e),
+                    format!("Failed to create backup: {}", error),
                 ));
                 continue;
             }
             files_backed_up.push(backup_path);
         }
 
-        let mut modified = content.clone();
-
-        for proposal in &proposals {
-            modified = apply_single_fix(&modified, proposal);
+        if let Err(error) = atomic_impl::write_file_atomically(file_path, modified.as_bytes()) {
+            errors.push((
+                file_path.to_path_buf(),
+                format!("Failed to write: {}", error),
+            ));
+            continue;
         }
-
-        if modified != content {
-            if let Err(e) = std::fs::write(file_path, &modified) {
-                errors.push((file_path.to_path_buf(), format!("Failed to write: {}", e)));
-                continue;
-            }
-            files_modified.push(file_path.to_path_buf());
-        }
+        files_modified.push(file_path.to_path_buf());
     }
 
     ApplyResult {
@@ -74,205 +97,122 @@ pub fn apply_fixes(plan: &FixPlan, create_backup: bool) -> ApplyResult {
     }
 }
 
-/// Apply a single fix to file content, returning the modified content.
-fn apply_single_fix(content: &str, proposal: &FixProposal) -> String {
-    match proposal.format {
-        FileFormat::PlainText => {
-            // For plain text files (.nvmrc, .python-version, etc.), replace entire content
-            format!("{}\n", proposal.proposed_raw)
-        }
-        FileFormat::Env => apply_env_fix(content, proposal),
-        FileFormat::Json | FileFormat::Yaml | FileFormat::Toml => {
-            apply_line_based_fix(content, proposal)
-        }
-        FileFormat::Dockerfile => apply_dockerfile_fix(content, proposal),
-    }
-}
-
-/// Fix an ENV file: find KEY=value and replace the value portion.
-fn apply_env_fix(content: &str, proposal: &FixProposal) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::with_capacity(lines.len());
-
-    for line in &lines {
-        if let Some((key, _)) = line.split_once('=') {
-            if key.trim() == proposal.key_path {
-                result.push(format!("{}={}", key, proposal.proposed_raw));
-                continue;
-            }
-        }
-        result.push(line.to_string());
-    }
-
-    let mut out = result.join("\n");
-    if content.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-/// Line-based fix for JSON/YAML/TOML: find the current value on the target line and replace it.
-fn apply_line_based_fix(content: &str, proposal: &FixProposal) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::with_capacity(lines.len());
-
-    for (i, line) in lines.iter().enumerate() {
-        let line_num = i + 1;
-        if line_num == proposal.line && line.contains(&proposal.current_raw) {
-            result.push(line.replacen(&proposal.current_raw, &proposal.proposed_raw, 1));
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    let mut out = result.join("\n");
-    if content.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-/// Fix a Dockerfile: replace image tag in FROM line.
-fn apply_dockerfile_fix(content: &str, proposal: &FixProposal) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::with_capacity(lines.len());
-
-    for (i, line) in lines.iter().enumerate() {
-        let line_num = i + 1;
-        if line_num == proposal.line && line.contains(&proposal.current_raw) {
-            result.push(line.replacen(&proposal.current_raw, &proposal.proposed_raw, 1));
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    let mut out = result.join("\n");
-    if content.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
 /// Render a dry-run preview of the fix plan.
 pub fn render_dry_run(plan: &FixPlan, no_color: bool) -> String {
-    let mut out = String::new();
-
-    if plan.proposals.is_empty() && plan.unfixable.is_empty() {
-        out.push_str("No fixes needed — all assertions are consistent.\n");
-        return out;
-    }
-
-    out.push_str(&format!(
-        "conflic v{} — fix preview\n\n",
-        env!("CARGO_PKG_VERSION")
-    ));
-
-    // Group proposals by concept
-    let mut by_concept: std::collections::BTreeMap<String, Vec<&super::FixProposal>> =
-        std::collections::BTreeMap::new();
-    for p in &plan.proposals {
-        by_concept
-            .entry(p.concept.display_name.clone())
-            .or_default()
-            .push(p);
-    }
-
-    for (concept_name, proposals) in &by_concept {
-        if no_color {
-            out.push_str(&format!("{}\n", concept_name));
-        } else {
-            out.push_str(&format!("{}\n", concept_name.bold()));
-        }
-
-        // Show the authority winner
-        if let Some(first) = proposals.first() {
-            if no_color {
-                out.push_str(&format!(
-                    "  Authority winner: {}\n\n",
-                    first.authority_winner
-                ));
-            } else {
-                out.push_str(&format!(
-                    "  Authority winner: {}\n\n",
-                    first.authority_winner.green()
-                ));
-            }
-        }
-
-        for proposal in proposals {
-            let rel_path = simplify_path(&proposal.file);
-            let key_info = if proposal.key_path.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", proposal.key_path)
-            };
-
-            if no_color {
-                out.push_str(&format!("  {}:{}{}\n", rel_path, proposal.line, key_info));
-                out.push_str(&format!("  - {}\n", proposal.current_raw));
-                out.push_str(&format!("  + {}\n", proposal.proposed_raw));
-            } else {
-                out.push_str(&format!(
-                    "  {}:{}{}\n",
-                    rel_path.cyan(),
-                    proposal.line,
-                    key_info
-                ));
-                out.push_str(&format!("  {}\n", format!("- {}", proposal.current_raw).red()));
-                out.push_str(&format!(
-                    "  {}\n",
-                    format!("+ {}", proposal.proposed_raw).green()
-                ));
-            }
-            out.push('\n');
-        }
-    }
-
-    // Show unfixable items
-    if !plan.unfixable.is_empty() {
-        if no_color {
-            out.push_str("Unfixable (manual resolution needed):\n");
-        } else {
-            out.push_str(&format!(
-                "{}\n",
-                "Unfixable (manual resolution needed):".yellow()
-            ));
-        }
-        for item in &plan.unfixable {
-            out.push_str(&format!("  {}: {}\n", item.concept.display_name, item.reason));
-        }
-        out.push('\n');
-    }
-
-    // Summary
-    let separator = "─".repeat(50);
-    if no_color {
-        out.push_str(&separator);
-    } else {
-        out.push_str(&separator.dimmed().to_string());
-    }
-    out.push('\n');
-
-    out.push_str(&format!(
-        "{} fix(es) proposed, {} unfixable\n",
-        plan.proposals.len(),
-        plan.unfixable.len(),
-    ));
-
-    if !plan.proposals.is_empty() && no_color {
-        out.push_str("Run `conflic fix` to apply.\n");
-    } else if !plan.proposals.is_empty() {
-        out.push_str("Run `conflic fix` to apply.\n");
-    }
-
-    out
+    preview_impl::render_dry_run(plan, no_color)
 }
 
-fn simplify_path(path: &Path) -> String {
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(rel) = path.strip_prefix(&cwd) {
-            return rel.to_string_lossy().to_string();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fix::FixOperation;
+    use crate::model::concept::{ConceptCategory, SemanticConcept};
+    use crate::parse::FileFormat;
+
+    fn make_proposal(
+        line: usize,
+        current_raw: &str,
+        proposed_raw: &str,
+        operation: FixOperation,
+    ) -> FixProposal {
+        FixProposal {
+            file: PathBuf::from("test.json"),
+            concept: SemanticConcept {
+                id: "test".into(),
+                display_name: "Test".into(),
+                category: ConceptCategory::RuntimeVersion,
+            },
+            current_raw: current_raw.into(),
+            proposed_raw: proposed_raw.into(),
+            key_path: String::new(),
+            line,
+            authority_winner: "enforced".into(),
+            winner_file: PathBuf::from("Dockerfile"),
+            format: FileFormat::PlainText,
+            operation,
         }
     }
-    path.to_string_lossy().to_string()
+
+    #[test]
+    fn test_apply_json_fix_updates_target_path() {
+        let content = "{\"engines\":{\"node\":\"18.0.0\"}}\n";
+        let proposal = make_proposal(
+            1,
+            "18.0.0",
+            "20.0.0",
+            FixOperation::ReplaceJsonString {
+                path: vec!["engines".into(), "node".into()],
+                value: "20.0.0".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(result, "{\"engines\":{\"node\":\"20.0.0\"}}\n");
+    }
+
+    #[test]
+    fn test_apply_json_fix_preserves_comments_and_crlf() {
+        let content = "{\r\n  // keep comment\r\n  \"engines\": {\r\n    \"node\": \"18.0.0\"\r\n  }\r\n}\r\n";
+        let proposal = make_proposal(
+            4,
+            "18.0.0",
+            "20.0.0",
+            FixOperation::ReplaceJsonString {
+                path: vec!["engines".into(), "node".into()],
+                value: "20.0.0".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert!(result.contains("// keep comment"));
+        assert!(result.contains("\"node\": \"20.0.0\""));
+        assert!(result.contains("\r\n"));
+        assert!(!result.contains("// keep comment\n"));
+    }
+
+    #[test]
+    fn test_apply_tool_versions_fix_updates_only_target_line() {
+        let content = "nodejs 18.0.0\nruby 3.2.2\n";
+        let proposal = make_proposal(
+            1,
+            "18.0.0",
+            "20.0.0",
+            FixOperation::ReplaceToolVersionsValue {
+                value: "20.0.0".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(result, "nodejs 20.0.0\nruby 3.2.2\n");
+    }
+
+    #[test]
+    fn test_apply_docker_from_fix_preserves_stage_alias() {
+        let content = "FROM node:18-alpine AS build\nRUN npm ci\n";
+        let proposal = make_proposal(
+            1,
+            "node:18-alpine AS build",
+            "node:20-alpine AS build",
+            FixOperation::ReplaceDockerFromArguments {
+                arguments: "node:20-alpine AS build".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(result, "FROM node:20-alpine AS build\nRUN npm ci\n");
+    }
+
+    #[test]
+    fn test_apply_whole_file_fix_preserves_missing_trailing_newline() {
+        let content = "18";
+        let proposal = make_proposal(
+            1,
+            "18",
+            "20",
+            FixOperation::ReplaceWholeFileValue { value: "20".into() },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(result, "20");
+    }
 }

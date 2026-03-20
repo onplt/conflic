@@ -4,17 +4,21 @@ pub mod severity;
 pub mod string;
 pub mod version;
 
+mod findings;
+mod monorepo;
+
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::config::ConflicConfig;
 use crate::model::*;
 
 /// Compare all assertions grouped by concept and produce findings.
 pub fn compare_assertions(
+    scan_root: &Path,
     assertions: Vec<ConfigAssertion>,
     config: &ConflicConfig,
 ) -> Vec<ConceptResult> {
-    // Group by concept ID
     let mut groups: HashMap<String, Vec<ConfigAssertion>> = HashMap::new();
     for assertion in assertions {
         groups
@@ -24,7 +28,6 @@ pub fn compare_assertions(
     }
 
     let mut results = Vec::new();
-
     let use_monorepo = config.monorepo.per_package && !config.monorepo.package_roots.is_empty();
 
     for (concept_id, group) in groups {
@@ -42,14 +45,10 @@ pub fn compare_assertions(
         }
 
         let concept = group[0].concept.clone();
-
-        let findings = if use_monorepo
-            && !config.monorepo.global_concepts.contains(&concept_id)
-        {
-            // Monorepo scoped comparison: only compare within same package root
-            find_monorepo_contradictions(&group, config)
+        let findings = if use_monorepo && !config.monorepo.global_concepts.contains(&concept_id) {
+            monorepo::find_monorepo_contradictions(scan_root, &group, config)
         } else {
-            find_contradictions(&group, config)
+            findings::find_contradictions(&group, config)
         };
 
         results.push(ConceptResult {
@@ -59,171 +58,8 @@ pub fn compare_assertions(
         });
     }
 
-    // Sort by concept display name
-    results.sort_by(|a, b| a.concept.display_name.cmp(&b.concept.display_name));
+    results.sort_by(|left, right| left.concept.display_name.cmp(&right.concept.display_name));
     results
-}
-
-/// In monorepo mode, only compare assertions within the same package root.
-fn find_monorepo_contradictions(
-    assertions: &[ConfigAssertion],
-    config: &ConflicConfig,
-) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    // Build glob matchers for package roots
-    let matchers: Vec<globset::GlobMatcher> = config
-        .monorepo
-        .package_roots
-        .iter()
-        .filter_map(|pattern| {
-            globset::Glob::new(pattern).ok().map(|g| g.compile_matcher())
-        })
-        .collect();
-
-    // Determine which package root each assertion belongs to
-    let package_of = |assertion: &ConfigAssertion| -> Option<String> {
-        let path_str = assertion.source.file.to_string_lossy();
-        for matcher in &matchers {
-            // Find the package root by checking path components
-            let path = std::path::Path::new(path_str.as_ref());
-            let mut accumulated = std::path::PathBuf::new();
-            for component in path.components() {
-                accumulated.push(component);
-                if matcher.is_match(&accumulated) {
-                    return Some(accumulated.to_string_lossy().to_string());
-                }
-            }
-        }
-        None // Not in any package root
-    };
-
-    // Group by package root
-    let mut by_package: HashMap<String, Vec<&ConfigAssertion>> = HashMap::new();
-    let mut root_level: Vec<&ConfigAssertion> = Vec::new();
-
-    for assertion in assertions {
-        if let Some(pkg) = package_of(assertion) {
-            by_package.entry(pkg).or_default().push(assertion);
-        } else {
-            root_level.push(assertion);
-        }
-    }
-
-    // Compare within each package (package assertions + root-level assertions)
-    for (_pkg, pkg_assertions) in &by_package {
-        let combined: Vec<&ConfigAssertion> = pkg_assertions
-            .iter()
-            .copied()
-            .chain(root_level.iter().copied())
-            .collect();
-
-        for i in 0..combined.len() {
-            for j in (i + 1)..combined.len() {
-                if let Some(finding) = compare_pair(combined[i], combined[j]) {
-                    if !config.should_ignore_finding(
-                        &finding.rule_id,
-                        &finding.left.source.file,
-                        &finding.right.source.file,
-                    ) {
-                        findings.push(finding);
-                    }
-                }
-            }
-        }
-    }
-
-    // Also compare root-level assertions among themselves
-    for i in 0..root_level.len() {
-        for j in (i + 1)..root_level.len() {
-            if let Some(finding) = compare_pair(root_level[i], root_level[j]) {
-                if !config.should_ignore_finding(
-                    &finding.rule_id,
-                    &finding.left.source.file,
-                    &finding.right.source.file,
-                ) {
-                    findings.push(finding);
-                }
-            }
-        }
-    }
-
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
-    findings
-}
-
-fn find_contradictions(
-    assertions: &[ConfigAssertion],
-    config: &ConflicConfig,
-) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    // Pairwise comparison
-    for i in 0..assertions.len() {
-        for j in (i + 1)..assertions.len() {
-            let left = &assertions[i];
-            let right = &assertions[j];
-
-            if let Some(finding) = compare_pair(left, right) {
-                // Check ignore rules
-                if !config.should_ignore_finding(
-                    &finding.rule_id,
-                    &finding.left.source.file,
-                    &finding.right.source.file,
-                ) {
-                    findings.push(finding);
-                }
-            }
-        }
-    }
-
-    // Deduplicate: keep highest severity per file pair
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity));
-    findings
-}
-
-fn compare_pair(left: &ConfigAssertion, right: &ConfigAssertion) -> Option<Finding> {
-    let compatibility = match (&left.value, &right.value) {
-        (SemanticType::Version(a), SemanticType::Version(b)) => {
-            version::versions_compatible(a, b)
-        }
-        (SemanticType::Port(a), SemanticType::Port(b)) => {
-            port::ports_compatible(a, b)
-        }
-        (SemanticType::Boolean(a), SemanticType::Boolean(b)) => {
-            boolean::booleans_compatible(*a, *b)
-        }
-        (SemanticType::StringValue(a), SemanticType::StringValue(b)) => {
-            string::strings_compatible(a, b)
-        }
-        _ => Compatibility::Unknown,
-    };
-
-    match compatibility {
-        Compatibility::Compatible => None,
-        Compatibility::Incompatible(explanation) => {
-            let sev = severity::compute_severity(left.authority, right.authority);
-            let rule_id = rule_id_for_type(&left.value);
-            Some(Finding {
-                severity: sev,
-                left: left.clone(),
-                right: right.clone(),
-                explanation,
-                rule_id,
-            })
-        }
-        Compatibility::Unknown => None, // Don't report unknowns
-    }
-}
-
-fn rule_id_for_type(value: &SemanticType) -> String {
-    match value {
-        SemanticType::Version(_) => "VER001".into(),
-        SemanticType::Port(_) => "PORT001".into(),
-        SemanticType::Boolean(_) => "BOOL001".into(),
-        SemanticType::StringValue(_) => "STR001".into(),
-        _ => "MISC001".into(),
-    }
 }
 
 /// Result of comparing two values.
@@ -231,4 +67,216 @@ pub enum Compatibility {
     Compatible,
     Incompatible(String),
     Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConflicConfig;
+    use crate::model::assertion::{Authority, ConfigAssertion, SourceLocation};
+    use crate::model::concept::{ConceptCategory, SemanticConcept};
+    use crate::model::semantic_type::SemanticType;
+    use std::path::PathBuf;
+
+    fn make_assertion(file: &str, value: &str, authority: Authority) -> ConfigAssertion {
+        ConfigAssertion {
+            concept: SemanticConcept {
+                id: "test".into(),
+                display_name: "Test".into(),
+                category: ConceptCategory::RuntimeVersion,
+            },
+            value: SemanticType::StringValue(value.into()),
+            raw_value: value.into(),
+            source: SourceLocation {
+                file: PathBuf::from(file),
+                line: 1,
+                column: 0,
+                key_path: "".into(),
+            },
+            span: None,
+            authority,
+            extractor_id: "test".into(),
+            is_matrix: false,
+        }
+    }
+
+    #[test]
+    fn test_compare_detects_string_contradiction() {
+        let assertions = vec![
+            make_assertion("a.json", "value-a", Authority::Declared),
+            make_assertion("b.json", "value-b", Authority::Declared),
+        ];
+        let config = ConflicConfig::default();
+        let results = compare_assertions(Path::new("."), assertions, &config);
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            !results[0].findings.is_empty(),
+            "Should detect contradiction"
+        );
+    }
+
+    #[test]
+    fn test_compare_no_contradiction_when_same() {
+        let assertions = vec![
+            make_assertion("a.json", "same", Authority::Declared),
+            make_assertion("b.json", "same", Authority::Declared),
+        ];
+        let config = ConflicConfig::default();
+        let results = compare_assertions(Path::new("."), assertions, &config);
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].findings.is_empty(),
+            "Same values should not contradict"
+        );
+    }
+
+    #[test]
+    fn test_skip_concept_removes_from_results() {
+        let assertions = vec![
+            make_assertion("a.json", "val-a", Authority::Declared),
+            make_assertion("b.json", "val-b", Authority::Declared),
+        ];
+        let mut config = ConflicConfig::default();
+        config.conflic.skip_concepts.push("test".into());
+
+        let results = compare_assertions(Path::new("."), assertions, &config);
+        assert!(results.is_empty(), "Skipped concepts should not appear");
+    }
+
+    #[test]
+    fn test_single_assertion_no_findings() {
+        let assertions = vec![make_assertion("a.json", "only-one", Authority::Declared)];
+        let config = ConflicConfig::default();
+        let results = compare_assertions(Path::new("."), assertions, &config);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].findings.is_empty());
+    }
+
+    #[test]
+    fn test_monorepo_scoped_comparison() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = ConflicConfig::default();
+        config.monorepo.per_package = true;
+        config.monorepo.package_roots.push("packages/*".into());
+
+        let a1 = make_assertion(
+            root.path()
+                .join("packages")
+                .join("a")
+                .join("config.json")
+                .to_string_lossy()
+                .as_ref(),
+            "val-a",
+            Authority::Declared,
+        );
+        let a2 = make_assertion(
+            root.path()
+                .join("packages")
+                .join("a")
+                .join("other.json")
+                .to_string_lossy()
+                .as_ref(),
+            "val-b",
+            Authority::Declared,
+        );
+        let b1 = make_assertion(
+            root.path()
+                .join("packages")
+                .join("b")
+                .join("config.json")
+                .to_string_lossy()
+                .as_ref(),
+            "val-c",
+            Authority::Declared,
+        );
+
+        let assertions = vec![a1, a2, b1];
+        let results = compare_assertions(root.path(), assertions, &config);
+
+        let test_results = results
+            .iter()
+            .find(|result| result.concept.id == "test")
+            .unwrap();
+        assert_eq!(
+            test_results.findings.len(),
+            1,
+            "Only package-local contradictions should be reported"
+        );
+    }
+
+    #[test]
+    fn test_matrix_duplicates_are_deduplicated() {
+        let mut assertions = Vec::new();
+        for line in 1..=200 {
+            let mut left = make_assertion("workflow-a.yml", "18", Authority::Enforced);
+            left.source.line = line;
+            left.is_matrix = true;
+            assertions.push(left);
+
+            let mut right = make_assertion("workflow-b.yml", "20", Authority::Enforced);
+            right.source.line = line;
+            right.is_matrix = true;
+            assertions.push(right);
+        }
+
+        let config = ConflicConfig::default();
+        let results = compare_assertions(Path::new("."), assertions, &config);
+        let test_results = results
+            .iter()
+            .find(|result| result.concept.id == "test")
+            .unwrap();
+
+        assert_eq!(
+            test_results.findings.len(),
+            1,
+            "duplicate matrix values should collapse to a single file-pair finding"
+        );
+    }
+
+    #[test]
+    fn test_monorepo_prefers_most_specific_package_root() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = ConflicConfig::default();
+        config.monorepo.per_package = true;
+        config.monorepo.package_roots = vec!["apps/*".into(), "apps/*/packages/*".into()];
+
+        let left = make_assertion(
+            root.path()
+                .join("apps")
+                .join("web")
+                .join("packages")
+                .join("a")
+                .join("package.json")
+                .to_string_lossy()
+                .as_ref(),
+            "18",
+            Authority::Declared,
+        );
+        let right = make_assertion(
+            root.path()
+                .join("apps")
+                .join("web")
+                .join("packages")
+                .join("b")
+                .join("package.json")
+                .to_string_lossy()
+                .as_ref(),
+            "20",
+            Authority::Declared,
+        );
+
+        let results = compare_assertions(root.path(), vec![left, right], &config);
+        let test_results = results
+            .iter()
+            .find(|result| result.concept.id == "test")
+            .unwrap();
+
+        assert!(
+            test_results.findings.is_empty(),
+            "nested package roots should win over broader matches"
+        );
+    }
 }

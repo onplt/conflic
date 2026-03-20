@@ -316,6 +316,11 @@ mod tests {
 
     #[test]
     fn test_source_matches_path_relative_glob() {
+        #[cfg(windows)]
+        let scan_root = Path::new("C:/repo");
+        #[cfg(not(windows))]
+        let scan_root = Path::new("/repo");
+
         let source = compile_source(
             CustomSourceConfig {
                 file: "configs/*.json".into(),
@@ -334,16 +339,21 @@ mod tests {
             },
             0,
             Some(Path::new(".conflic.toml")),
-            Some(Path::new("C:/repo")),
+            Some(scan_root),
         )
         .unwrap();
 
-        let path = Path::new("C:/repo/configs/app.json");
-        assert!(source.matches_path("app.json", path));
+        let path = scan_root.join("configs/app.json");
+        assert!(source.matches_path("app.json", &path));
     }
 
     #[test]
     fn test_source_matches_exact_relative_path_on_component_boundaries() {
+        #[cfg(windows)]
+        let scan_root = Path::new("C:/repo");
+        #[cfg(not(windows))]
+        let scan_root = Path::new("/repo");
+
         let source = compile_source(
             CustomSourceConfig {
                 file: "configs/package.json".into(),
@@ -362,18 +372,15 @@ mod tests {
             },
             0,
             Some(Path::new(".conflic.toml")),
-            Some(Path::new("C:/repo")),
+            Some(scan_root),
         )
         .unwrap();
 
-        assert!(source.matches_path("package.json", Path::new("C:/repo/configs/package.json")));
+        assert!(source.matches_path("package.json", &scan_root.join("configs/package.json")));
+        assert!(!source.matches_path("package.json", &scan_root.join("otherconfigs/package.json")));
         assert!(!source.matches_path(
             "package.json",
-            Path::new("C:/repo/otherconfigs/package.json")
-        ));
-        assert!(!source.matches_path(
-            "package.json",
-            Path::new("C:/repo/nested/configs/package.json")
+            &scan_root.join("nested/configs/package.json")
         ));
     }
 

@@ -124,9 +124,13 @@ pub(super) fn render_docker_from_arguments(
 ) -> Option<String> {
     let reference = crate::parse::dockerfile::docker_from_image_reference(current_arguments)?;
     let new_tag = render_docker_tag(winner, reference.tag)?;
+    let digest_suffix = reference
+        .digest
+        .map(|digest| format!("@{}", digest))
+        .unwrap_or_default();
     Some(format!(
-        "{}{}:{}{}",
-        reference.prefix, reference.image, new_tag, reference.suffix
+        "{}{}:{}{}{}",
+        reference.prefix, reference.image, new_tag, digest_suffix, reference.suffix
     ))
 }
 
@@ -173,4 +177,42 @@ fn is_numeric_version_token(raw: &str) -> bool {
     !raw.is_empty()
         && raw.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
         && raw.chars().any(|ch| ch.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::assertion::{Authority, SourceLocation};
+    use std::path::PathBuf;
+
+    fn winner(raw_value: &str) -> ConfigAssertion {
+        ConfigAssertion {
+            concept: SemanticConcept::node_version(),
+            value: parse_version_assertion(raw_value),
+            raw_value: raw_value.to_string(),
+            source: SourceLocation {
+                file: PathBuf::from("package.json"),
+                line: 1,
+                column: 0,
+                key_path: "engines.node".into(),
+            },
+            span: None,
+            authority: Authority::Declared,
+            extractor_id: "node-version-package-json".into(),
+            is_matrix: false,
+        }
+    }
+
+    fn parse_version_assertion(raw_value: &str) -> SemanticType {
+        SemanticType::Version(parse_version(raw_value))
+    }
+
+    #[test]
+    fn render_docker_from_arguments_preserves_digest() {
+        let rendered =
+            render_docker_from_arguments(&winner("20"), "node:18-alpine@sha256:deadbeef AS build")
+                .expect("docker arguments should render");
+
+        assert_eq!(rendered, "node:20-alpine@sha256:deadbeef AS build");
+    }
 }

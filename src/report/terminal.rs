@@ -7,7 +7,7 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
 
     // Header
     output.push_str(&format!(
-        "conflic v{} — scanning\n\n",
+        "conflic v{} - scanning\n\n",
         env!("CARGO_PKG_VERSION")
     ));
 
@@ -98,7 +98,7 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
     }
 
     // Summary line
-    let separator = "─".repeat(50);
+    let separator = "-".repeat(50);
     output.push_str(&format!(
         "{}\n",
         if no_color {
@@ -193,5 +193,28 @@ mod tests {
         let simplified = simplify_path(Path::new(r"\\?\C:\workspace\package.json"));
 
         assert_eq!(simplified, r"C:\workspace\package.json");
+    }
+
+    #[test]
+    fn test_render_uses_ascii_header_and_separator() {
+        let output = render(
+            &ScanResult {
+                concept_results: Vec::new(),
+                parse_diagnostics: Vec::new(),
+            },
+            true,
+            false,
+        );
+
+        assert!(
+            output.contains(" - scanning"),
+            "expected ASCII scan header, got:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("â"),
+            "terminal output should not contain mojibake, got:\n{}",
+            output
+        );
     }
 }

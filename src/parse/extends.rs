@@ -3,6 +3,8 @@ use crate::model::Severity;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+const MAX_EXTENDS_DEPTH: usize = 128;
+
 /// Resolve a JSON config that may have an "extends" field,
 /// merging parent configs into the child with cycle detection.
 /// Returns the merged JSON value.
@@ -21,7 +23,7 @@ pub fn resolve_structured_extends(
     if let Some(file_str) = canonical_file.to_str() {
         visited.insert(file_str.to_string());
     }
-    resolve_recursive(value, &file.path, &file.scan_root, &mut visited, file)
+    resolve_recursive(value, &file.path, &file.scan_root, &mut visited, file, 0)
 }
 
 fn resolve_recursive(
@@ -30,6 +32,7 @@ fn resolve_recursive(
     scan_root: &Path,
     visited: &mut HashSet<String>,
     diagnostics_sink: &ParsedFile,
+    depth: usize,
 ) -> serde_json::Value {
     let extends_entries = extends_entries(value);
     if extends_entries.is_empty() {
@@ -40,9 +43,14 @@ fn resolve_recursive(
     let mut handled_local_extend = false;
 
     for extends in extends_entries {
-        if let Some(parent_value) =
-            resolve_single_extend(&extends, file_path, scan_root, visited, diagnostics_sink)
-        {
+        if let Some(parent_value) = resolve_single_extend(
+            &extends,
+            file_path,
+            scan_root,
+            visited,
+            diagnostics_sink,
+            depth,
+        ) {
             handled_local_extend = true;
             resolved_parent = deep_merge_json(&resolved_parent, &parent_value);
         } else if should_resolve_locally(&extends, file_path) {
@@ -74,11 +82,25 @@ fn resolve_single_extend(
     scan_root: &Path,
     visited: &mut HashSet<String>,
     diagnostics_sink: &ParsedFile,
+    depth: usize,
 ) -> Option<serde_json::Value> {
     let base_dir = file_path.parent().unwrap_or(Path::new("."));
     let extends_path = resolve_extends_path(base_dir, extends);
 
     if !should_resolve_locally(extends, file_path) {
+        return None;
+    }
+
+    if depth >= MAX_EXTENDS_DEPTH {
+        diagnostics_sink.push_parse_diagnostic(parse_diagnostic(
+            Severity::Error,
+            file_path.to_path_buf(),
+            PARSE_EXTENDS_ERROR_RULE_ID,
+            format!(
+                "Exceeded maximum extends depth of {} while resolving '{}'",
+                MAX_EXTENDS_DEPTH, extends
+            ),
+        ));
         return None;
     }
 
@@ -133,13 +155,14 @@ fn resolve_single_extend(
         return None;
     }
 
-    let resolved = match read_structured_config(&canonical) {
+    let resolved = match read_structured_config(&canonical, diagnostics_sink) {
         Ok(parent_value) => Some(resolve_recursive(
             &parent_value,
             &canonical,
             scan_root,
             visited,
             diagnostics_sink,
+            depth + 1,
         )),
         Err(err) => {
             diagnostics_sink.push_parse_diagnostic(parse_diagnostic(
@@ -187,9 +210,15 @@ fn should_resolve_locally(extends: &str, file_path: &Path) -> bool {
 }
 
 /// Read and parse an inherited JSON/YAML config file into a structured value.
-fn read_structured_config(path: &Path) -> Result<serde_json::Value, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read inherited config: {}", e))?;
+fn read_structured_config(
+    path: &Path,
+    diagnostics_sink: &ParsedFile,
+) -> Result<serde_json::Value, String> {
+    let content = match diagnostics_sink.override_content_for(path) {
+        Some(content) => content,
+        None => std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read inherited config: {}", e))?,
+    };
 
     let filename = path
         .file_name()
@@ -232,6 +261,10 @@ fn parse_yaml_value(content: &str) -> Result<serde_json::Value, String> {
 }
 
 fn looks_like_local_config_reference(extends: &str) -> bool {
+    if extends.contains('/') || extends.contains('\\') {
+        return false;
+    }
+
     let path = Path::new(extends);
     let file_name = path
         .file_name()
@@ -275,6 +308,8 @@ mod tests {
     use crate::model::Severity;
     use crate::parse::{FileContent, FileFormat};
     use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn parsed_file(path: PathBuf, scan_root: PathBuf, value: serde_json::Value) -> ParsedFile {
@@ -285,6 +320,7 @@ mod tests {
             content: FileContent::Json(value.clone()),
             raw_text: value.to_string(),
             parse_diagnostics: RefCell::new(Vec::new()),
+            content_overrides: Arc::new(HashMap::new()),
         }
     }
 
@@ -407,6 +443,7 @@ mod tests {
             content: FileContent::Yaml(child_value.clone()),
             raw_text: "extends: ./.eslintrc.base.yml\n".into(),
             parse_diagnostics: RefCell::new(Vec::new()),
+            content_overrides: Arc::new(HashMap::new()),
         };
 
         let resolved = resolve_structured_extends(&child_value, &parsed);
@@ -445,6 +482,86 @@ mod tests {
                     && diagnostic.message.contains("tsconfig.base")
             }),
             "expected missing bare local config to produce PARSE002, got {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_resolve_json_extends_ignores_package_reference_subpaths() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let child_path = workspace.join("tsconfig.json");
+        let child_value = serde_json::json!({
+            "extends": "@tsconfig/node20/tsconfig.json"
+        });
+        std::fs::write(&child_path, child_value.to_string()).unwrap();
+
+        let parsed = parsed_file(
+            child_path,
+            workspace.canonicalize().unwrap(),
+            child_value.clone(),
+        );
+
+        let resolved = resolve_json_extends(&child_value, &parsed);
+        let diagnostics = parsed.take_parse_diagnostics();
+
+        assert_eq!(resolved, child_value);
+        assert!(
+            diagnostics.is_empty(),
+            "package-style extends references should not be misreported as missing local files: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_resolve_json_extends_limits_depth_before_stack_overflow() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let depth = MAX_EXTENDS_DEPTH + 2;
+        for index in 0..depth {
+            let filename = if index == 0 {
+                "tsconfig.json".to_string()
+            } else {
+                format!("tsconfig.{}.json", index)
+            };
+            let content = if index == depth - 1 {
+                r#"{"compilerOptions":{"strict":true}}"#.to_string()
+            } else {
+                let next = format!("./tsconfig.{}.json", index + 1);
+                format!(r#"{{"extends":"{}"}}"#, next)
+            };
+            std::fs::write(workspace.join(filename), content).unwrap();
+        }
+
+        let child_path = workspace.join("tsconfig.json");
+        let child_value = serde_json::json!({
+            "extends": "./tsconfig.1.json"
+        });
+        let parsed = parsed_file(
+            child_path,
+            workspace.canonicalize().unwrap(),
+            child_value.clone(),
+        );
+
+        let resolved = resolve_json_extends(&child_value, &parsed);
+        let diagnostics = parsed.take_parse_diagnostics();
+
+        assert!(
+            resolved.get("compilerOptions").is_none(),
+            "depth-limited resolution should stop before pulling in distant parents"
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.rule_id == PARSE_EXTENDS_ERROR_RULE_ID
+                    && diagnostic
+                        .message
+                        .contains("Exceeded maximum extends depth")
+            }),
+            "expected a depth-limit diagnostic, got {:?}",
             diagnostics
         );
     }

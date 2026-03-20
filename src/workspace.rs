@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config::ConflicConfig;
 use crate::extract::Extractor;
@@ -77,7 +78,8 @@ impl IncrementalWorkspace {
     }
 
     pub fn full_scan(&mut self, content_overrides: &HashMap<PathBuf, String>) -> ScanResult {
-        let normalized_overrides = normalize_content_overrides(&self.root, content_overrides);
+        let normalized_overrides =
+            Arc::new(normalize_content_overrides(&self.root, content_overrides));
         let mut plans: Vec<FileScanPlan> = self.file_plans.values().cloned().collect();
         plans.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -112,7 +114,8 @@ impl IncrementalWorkspace {
             return self.current_scan_result();
         }
 
-        let normalized_overrides = normalize_content_overrides(&self.root, content_overrides);
+        let normalized_overrides =
+            Arc::new(normalize_content_overrides(&self.root, content_overrides));
         let mut changed_plans = Vec::new();
         let mut changed_paths = HashSet::new();
         let mut impacted_concepts = HashSet::new();

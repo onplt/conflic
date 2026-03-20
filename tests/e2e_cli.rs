@@ -84,6 +84,11 @@ fn test_cli_init_creates_template_config() {
         "expected init to create the template config, got:\n{}",
         config
     );
+    assert!(
+        config.contains("Custom extractors - define your own concepts without writing Rust"),
+        "expected init template to contain the ASCII custom extractor comment, got:\n{}",
+        config
+    );
 }
 
 #[test]
@@ -192,6 +197,122 @@ fn test_cli_diff_mode_detects_new_contradiction() {
 }
 
 #[test]
+fn test_cli_diff_preserves_significant_whitespace_in_git_paths() {
+    let workspace = TestWorkspace::new();
+    workspace.write(
+        ".conflic.toml",
+        r#"[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = " pkg/settings.json"
+format = "json"
+path = "redis"
+authority = "enforced"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"
+"#,
+    );
+    workspace.write(".env", "REDIS_VERSION=7.0\n");
+    workspace.write(
+        Path::new(" pkg").join("settings.json"),
+        r#"{"redis":"7.0"}"#,
+    );
+    workspace.init_git_repo();
+    workspace.git_add_and_commit("initial");
+
+    workspace.write(
+        Path::new(" pkg").join("settings.json"),
+        r#"{"redis":"8.0"}"#,
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--diff")
+        .arg("HEAD")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("redis-version"))
+        .stdout(predicate::str::contains("\"value\": \"8.0\""))
+        .stdout(predicate::str::contains("\"value\": \"7.0\""));
+}
+
+#[test]
+fn test_cli_diff_stdin_preserves_significant_whitespace_in_paths() {
+    let workspace = TestWorkspace::new();
+    workspace.write(
+        ".conflic.toml",
+        r#"[[custom_extractor]]
+concept = "redis-version"
+display_name = "Redis Version"
+category = "runtime-version"
+type = "version"
+
+[[custom_extractor.source]]
+file = " pkg/settings.json"
+format = "json"
+path = "redis"
+authority = "enforced"
+
+[[custom_extractor.source]]
+file = ".env"
+format = "env"
+key = "REDIS_VERSION"
+authority = "declared"
+"#,
+    );
+    workspace.write(".env", "REDIS_VERSION=7.0\n");
+    workspace.write(
+        Path::new(" pkg").join("settings.json"),
+        r#"{"redis":"8.0"}"#,
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--diff-stdin")
+        .arg("--format")
+        .arg("json")
+        .write_stdin(" pkg/settings.json\n")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("redis-version"))
+        .stdout(predicate::str::contains("\"value\": \"8.0\""))
+        .stdout(predicate::str::contains("\"value\": \"7.0\""));
+}
+
+#[test]
+fn test_cli_diff_rejects_option_like_git_ref() {
+    let workspace = TestWorkspace::new();
+    workspace.write(".nvmrc", "20\n");
+    workspace.init_git_repo();
+    workspace.git_add_and_commit("initial");
+
+    let injected_output = workspace.path("owned-by-diff.txt");
+    let diff_arg = format!("--diff=--output={}", injected_output.display());
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg(diff_arg)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("must not start with '-'"));
+
+    assert!(
+        !injected_output.exists(),
+        "option-like diff refs must not create git-controlled output files"
+    );
+}
+
+#[test]
 fn test_cli_detects_node_version_in_github_workflow() {
     let workspace = TestWorkspace::new();
     workspace.write(".nvmrc", "18\n");
@@ -289,6 +410,56 @@ fn test_cli_fix_preserves_jsonc_comments_and_crlf() {
 }
 
 #[test]
+fn test_cli_fix_updates_multiline_docker_from_without_leaving_continuation_line_behind() {
+    let workspace = TestWorkspace::new();
+    workspace.write("package.json", r#"{"engines":{"node":"20"}}"#);
+    workspace.write(
+        "Dockerfile",
+        "FROM --platform=linux/amd64 \\\n  node:18-alpine AS build\nRUN npm ci\nFROM node:20-alpine\n",
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--fix")
+        .arg("--yes")
+        .arg("--no-backup")
+        .arg("--no-color")
+        .assert()
+        .success();
+
+    let dockerfile = workspace.read("Dockerfile");
+    assert_eq!(
+        dockerfile,
+        "FROM --platform=linux/amd64 node:20-alpine AS build\nRUN npm ci\nFROM node:20-alpine\n"
+    );
+}
+
+#[test]
+fn test_cli_fix_preserves_docker_image_digest() {
+    let workspace = TestWorkspace::new();
+    workspace.write("package.json", r#"{"engines":{"node":"20"}}"#);
+    workspace.write(
+        "Dockerfile",
+        "FROM node:18-alpine@sha256:deadbeef AS build\nRUN npm ci\nFROM nginx:1.27\n",
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--fix")
+        .arg("--yes")
+        .arg("--no-backup")
+        .arg("--no-color")
+        .assert()
+        .success();
+
+    let dockerfile = workspace.read("Dockerfile");
+    assert_eq!(
+        dockerfile,
+        "FROM node:20-alpine@sha256:deadbeef AS build\nRUN npm ci\nFROM nginx:1.27\n"
+    );
+}
+
+#[test]
 fn test_cli_fix_uses_atomic_replace_and_keeps_backups() {
     let workspace = TestWorkspace::new();
     workspace.write_node_workspace("18", "18", "20-alpine");
@@ -361,6 +532,66 @@ fn test_cli_fix_preserves_crlf_for_line_based_env_rewrites() {
         all_line_endings_are_crlf(&env_bytes),
         "expected CRLF line endings to be preserved for line-based fixes, got bytes: {:?}",
         env_bytes
+    );
+}
+
+#[test]
+fn test_cli_fix_preserves_env_quotes_and_inline_comments() {
+    let workspace = TestWorkspace::new();
+    workspace.write(
+        ".env",
+        "export PORT = \"3000\"  # keep comment\nNAME=demo\n",
+    );
+    workspace.write(
+        "docker-compose.yml",
+        "services:\n  app:\n    image: node:20-alpine\n    ports:\n      - \"8080:8080\"\n",
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--fix")
+        .arg("--yes")
+        .arg("--no-backup")
+        .arg("--no-color")
+        .assert()
+        .success();
+
+    let env_text = workspace.read(".env");
+    assert!(
+        env_text.contains("export PORT = \"8080\"  # keep comment"),
+        "expected env fix to preserve quotes and inline comments, got:\n{}",
+        env_text
+    );
+}
+
+#[test]
+fn test_cli_fix_refuses_ambiguous_multi_token_docker_expose_line() {
+    let workspace = TestWorkspace::new();
+    workspace.write("Dockerfile", "EXPOSE 3000 5000\n");
+    workspace.write(
+        "docker-compose.yml",
+        "services:\n  app:\n    image: node:20-alpine\n    ports:\n      - \"8080:8080\"\n",
+    );
+
+    conflic_cmd_in(workspace.root())
+        .arg(".")
+        .arg("--fix")
+        .arg("--yes")
+        .arg("--no-backup")
+        .arg("--no-color")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Unfixable (manual resolution needed):",
+        ))
+        .stdout(predicate::str::contains(
+            "Dockerfile EXPOSE line contains multiple port tokens",
+        ));
+
+    assert_eq!(
+        workspace.read("Dockerfile"),
+        "EXPOSE 3000 5000\n",
+        "ambiguous EXPOSE lines must be left unchanged"
     );
 }
 

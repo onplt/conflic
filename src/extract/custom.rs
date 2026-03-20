@@ -35,10 +35,11 @@ pub struct CustomExtractor {
 #[derive(Clone)]
 struct CompiledCustomSource {
     config: CustomSourceConfig,
-    normalized_file: String,
+    match_path: String,
+    scan_root: Option<std::path::PathBuf>,
+    file_is_absolute: bool,
     filename_glob: Option<Arc<globset::GlobMatcher>>,
     path_glob: Option<Arc<globset::GlobMatcher>>,
-    relative_path_glob: Option<Arc<globset::GlobMatcher>>,
     pattern_regex: Option<Regex>,
 }
 
@@ -61,12 +62,14 @@ pub fn custom_config_hash(configs: &[CustomExtractorConfig]) -> u64 {
 pub fn compile_custom_extractors(
     configs: &[CustomExtractorConfig],
     config_path: Option<&Path>,
+    scan_root: Option<&Path>,
 ) -> (Vec<CustomExtractor>, Vec<ParseDiagnostic>) {
     let mut extractors = Vec::new();
     let mut diagnostics = Vec::new();
 
     for config in configs {
-        let (extractor, extractor_diagnostics) = CustomExtractor::new(config.clone(), config_path);
+        let (extractor, extractor_diagnostics) =
+            CustomExtractor::new(config.clone(), config_path, scan_root);
         diagnostics.extend(extractor_diagnostics);
         if let Some(extractor) = extractor {
             extractors.push(extractor);
@@ -80,12 +83,13 @@ impl CustomExtractor {
     pub fn new(
         config: CustomExtractorConfig,
         config_path: Option<&Path>,
+        scan_root: Option<&Path>,
     ) -> (Option<Self>, Vec<ParseDiagnostic>) {
         let mut diagnostics = Vec::new();
         let mut sources = Vec::new();
 
         for (index, source) in config.source.iter().cloned().enumerate() {
-            match compile_source(source, &config, index, config_path) {
+            match compile_source(source, &config, index, config_path, scan_root) {
                 Ok(source) => sources.push(source),
                 Err(diagnostic) => diagnostics.push(diagnostic),
             }
@@ -141,27 +145,31 @@ impl CustomExtractor {
         key_path: &str,
         file: &ParsedFile,
         authority: Authority,
+        preserve_yaml_literal: bool,
     ) -> ConfigAssertion {
-        let value = self.parse_value(raw);
-        let line = crate::parse::source_location::find_line_for_key_value(
-            &file.raw_text,
-            key_path.rsplit('.').next().unwrap_or(key_path),
-            raw,
-        );
+        let leaf_key = key_path.rsplit('.').next().unwrap_or(key_path);
+        let line = if matches!(&file.format, crate::parse::FileFormat::Yaml) {
+            crate::parse::yaml::line_for_key_path(&file.raw_text, key_path).unwrap_or_else(|| {
+                crate::parse::source_location::find_line_for_key_value(&file.raw_text, leaf_key, raw)
+            })
+        } else {
+            crate::parse::source_location::find_line_for_key_value(&file.raw_text, leaf_key, raw)
+        };
+        let raw = if preserve_yaml_literal && matches!(&file.format, crate::parse::FileFormat::Yaml)
+        {
+            crate::parse::yaml::inline_scalar_literal_for_key(&file.raw_text, line, leaf_key)
+                .unwrap_or_else(|| raw.to_string())
+        } else {
+            raw.to_string()
+        };
+        let value = self.parse_value(&raw);
         let location = SourceLocation {
             file: file.path.clone(),
             line,
             column: 0,
             key_path: key_path.to_string(),
         };
-        ConfigAssertion::new(
-            self.concept(),
-            value,
-            raw.to_string(),
-            location,
-            authority,
-            self.id(),
-        )
+        ConfigAssertion::new(self.concept(), value, raw, location, authority, self.id())
     }
 }
 
@@ -294,6 +302,7 @@ mod tests {
             },
             0,
             Some(Path::new(".conflic.toml")),
+            None,
         )
         .unwrap();
 
@@ -321,11 +330,47 @@ mod tests {
             },
             0,
             Some(Path::new(".conflic.toml")),
+            Some(Path::new("C:/repo")),
         )
         .unwrap();
 
         let path = Path::new("C:/repo/configs/app.json");
         assert!(source.matches_path("app.json", path));
+    }
+
+    #[test]
+    fn test_source_matches_exact_relative_path_on_component_boundaries() {
+        let source = compile_source(
+            CustomSourceConfig {
+                file: "configs/package.json".into(),
+                format: "json".into(),
+                path: Some("custom.redis".into()),
+                key: None,
+                pattern: None,
+                authority: "declared".into(),
+            },
+            &CustomExtractorConfig {
+                concept: "redis-version".into(),
+                display_name: "Redis Version".into(),
+                category: "runtime-version".into(),
+                value_type: "version".into(),
+                source: vec![],
+            },
+            0,
+            Some(Path::new(".conflic.toml")),
+            Some(Path::new("C:/repo")),
+        )
+        .unwrap();
+
+        assert!(source.matches_path("package.json", Path::new("C:/repo/configs/package.json")));
+        assert!(!source.matches_path(
+            "package.json",
+            Path::new("C:/repo/otherconfigs/package.json")
+        ));
+        assert!(!source.matches_path(
+            "package.json",
+            Path::new("C:/repo/nested/configs/package.json")
+        ));
     }
 
     #[test]
@@ -346,7 +391,11 @@ mod tests {
         };
 
         let (extractors, diagnostics) =
-            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+            compile_custom_extractors(
+                &[config],
+                Some(Path::new("workspace/.conflic.toml")),
+                Some(Path::new("workspace")),
+            );
 
         assert!(
             extractors.is_empty(),
@@ -379,7 +428,11 @@ mod tests {
         };
 
         let (extractors, diagnostics) =
-            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+            compile_custom_extractors(
+                &[config],
+                Some(Path::new("workspace/.conflic.toml")),
+                Some(Path::new("workspace")),
+            );
 
         assert!(
             extractors.is_empty(),
@@ -412,7 +465,11 @@ mod tests {
         };
 
         let (extractors, diagnostics) =
-            compile_custom_extractors(&[config], Some(Path::new("workspace/.conflic.toml")));
+            compile_custom_extractors(
+                &[config],
+                Some(Path::new("workspace/.conflic.toml")),
+                Some(Path::new("workspace")),
+            );
 
         assert!(
             extractors.is_empty(),

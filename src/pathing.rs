@@ -1,6 +1,14 @@
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CiConfigPathKind {
+    GithubWorkflows,
+    CircleCi,
+    GitlabDirectory,
+    GitlabRootFile,
+}
+
 pub(crate) fn normalize_root(root: &Path) -> PathBuf {
     normalize_path(root)
 }
@@ -41,14 +49,48 @@ pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn normalize_from_root(root: &Path, path: &Path) -> PathBuf {
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
+pub(crate) fn classify_ci_config_path(scan_root: &Path, path: &Path) -> Option<CiConfigPathKind> {
+    let normalized_root = normalize_root(scan_root);
+    let normalized_path = normalize_from_root(&normalized_root, path);
+    let relative = normalized_path.strip_prefix(&normalized_root).ok()?;
+    let filename = relative.file_name()?.to_str()?;
+    let is_yaml = filename.ends_with(".yml") || filename.ends_with(".yaml");
+    let component_count = relative.components().count();
 
-    normalize_path(&candidate)
+    if component_count == 1 && filename == ".gitlab-ci.yml" {
+        return Some(CiConfigPathKind::GitlabRootFile);
+    }
+
+    if !is_yaml {
+        return None;
+    }
+
+    let mut components = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str());
+    let first = components.next()?;
+
+    match first {
+        ".github" => (components.next() == Some("workflows") && component_count == 3)
+            .then_some(CiConfigPathKind::GithubWorkflows),
+        ".circleci" => (component_count == 2 && matches!(filename, "config.yml" | "config.yaml"))
+            .then_some(CiConfigPathKind::CircleCi),
+        ".gitlab-ci" => Some(CiConfigPathKind::GitlabDirectory),
+        _ => None,
+    }
+}
+
+fn normalize_from_root(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return normalize_path(path);
+    }
+
+    let normalized = normalize_path(path);
+    if normalized.starts_with(root) {
+        normalized
+    } else {
+        normalize_path(&root.join(path))
+    }
 }
 
 fn canonicalize_with_ancestor(path: &Path) -> Option<PathBuf> {
@@ -135,5 +177,62 @@ mod tests {
             strip_windows_extended_length_prefix(Path::new(r"\\?\UNC\server\share\package.json"));
 
         assert_eq!(sanitized, PathBuf::from(r"\\server\share\package.json"));
+    }
+
+    #[test]
+    fn classify_ci_config_path_supports_gitlab_ci_directory_files() {
+        let root = Path::new("workspace");
+        let path = Path::new("workspace/.gitlab-ci/jobs/build.yml");
+
+        assert_eq!(
+            classify_ci_config_path(root, path),
+            Some(CiConfigPathKind::GitlabDirectory)
+        );
+    }
+
+    #[test]
+    fn classify_ci_config_path_requires_root_gitlab_ci_yml() {
+        let root = Path::new("workspace");
+        let nested = Path::new("workspace/subdir/.gitlab-ci.yml");
+        let root_file = Path::new("workspace/.gitlab-ci.yml");
+
+        assert_eq!(classify_ci_config_path(root, nested), None);
+        assert_eq!(
+            classify_ci_config_path(root, root_file),
+            Some(CiConfigPathKind::GitlabRootFile)
+        );
+    }
+
+    #[test]
+    fn classify_ci_config_path_requires_github_workflow_file_at_supported_depth() {
+        let root = Path::new("workspace");
+        let direct = Path::new("workspace/.github/workflows/ci.yml");
+        let nested = Path::new("workspace/.github/workflows/nested/ci.yml");
+
+        assert_eq!(
+            classify_ci_config_path(root, direct),
+            Some(CiConfigPathKind::GithubWorkflows)
+        );
+        assert_eq!(classify_ci_config_path(root, nested), None);
+    }
+
+    #[test]
+    fn classify_ci_config_path_requires_root_circleci_config_file() {
+        let root = Path::new("workspace");
+        let config = Path::new("workspace/.circleci/config.yml");
+        let alt_config = Path::new("workspace/.circleci/config.yaml");
+        let notes = Path::new("workspace/.circleci/notes.yml");
+        let nested = Path::new("workspace/.circleci/jobs/config.yml");
+
+        assert_eq!(
+            classify_ci_config_path(root, config),
+            Some(CiConfigPathKind::CircleCi)
+        );
+        assert_eq!(
+            classify_ci_config_path(root, alt_config),
+            Some(CiConfigPathKind::CircleCi)
+        );
+        assert_eq!(classify_ci_config_path(root, notes), None);
+        assert_eq!(classify_ci_config_path(root, nested), None);
     }
 }

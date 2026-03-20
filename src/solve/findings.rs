@@ -77,6 +77,10 @@ fn collect_findings_for_bucket_pair(
 
     for left in &left_bucket.representatives {
         for right in &right_bucket.representatives {
+            if normalized_file_key(&left.source.file) == normalized_file_key(&right.source.file) {
+                continue;
+            }
+
             let finding = Finding {
                 severity: severity::compute_severity(left.authority, right.authority),
                 left: (*left).clone(),

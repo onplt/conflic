@@ -10,7 +10,9 @@ pub mod yaml;
 
 use crate::model::{ParseDiagnostic, Severity};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(crate) const PARSE_FILE_ERROR_RULE_ID: &str = "PARSE001";
 pub(crate) const PARSE_EXTENDS_ERROR_RULE_ID: &str = "PARSE002";
@@ -83,6 +85,7 @@ pub struct ParsedFile {
     pub content: FileContent,
     pub raw_text: String,
     parse_diagnostics: RefCell<Vec<ParseDiagnostic>>,
+    pub(crate) content_overrides: Arc<HashMap<PathBuf, String>>,
 }
 
 impl ParsedFile {
@@ -93,26 +96,52 @@ impl ParsedFile {
     pub fn take_parse_diagnostics(&self) -> Vec<ParseDiagnostic> {
         self.parse_diagnostics.borrow_mut().drain(..).collect()
     }
+
+    pub(crate) fn override_content_for(&self, path: &Path) -> Option<String> {
+        let normalized = crate::pathing::normalize_for_workspace(&self.scan_root, path);
+        self.content_overrides.get(&normalized).cloned()
+    }
 }
 
 /// Detect format from filename and parse the file.
 pub fn parse_file(path: &Path, scan_root: &Path) -> Result<ParsedFile, ParseDiagnostic> {
-    let raw_text = std::fs::read_to_string(path).map_err(|e| {
-        parse_diagnostic(
-            Severity::Error,
-            path.to_path_buf(),
-            PARSE_FILE_ERROR_RULE_ID,
-            format!("Failed to read: {}", e),
-        )
-    })?;
-
-    parse_file_with_content(path, scan_root, raw_text)
+    parse_file_with_shared_context(path, scan_root, None, Arc::new(HashMap::new()))
 }
 
 pub fn parse_file_with_content(
     path: &Path,
     scan_root: &Path,
     raw_text: String,
+) -> Result<ParsedFile, ParseDiagnostic> {
+    parse_file_with_shared_context(path, scan_root, Some(raw_text), Arc::new(HashMap::new()))
+}
+
+pub(crate) fn parse_file_with_shared_context(
+    path: &Path,
+    scan_root: &Path,
+    raw_text_override: Option<String>,
+    content_overrides: Arc<HashMap<PathBuf, String>>,
+) -> Result<ParsedFile, ParseDiagnostic> {
+    let raw_text = match raw_text_override {
+        Some(raw_text) => raw_text,
+        None => std::fs::read_to_string(path).map_err(|e| {
+            parse_diagnostic(
+                Severity::Error,
+                path.to_path_buf(),
+                PARSE_FILE_ERROR_RULE_ID,
+                format!("Failed to read: {}", e),
+            )
+        })?,
+    };
+
+    parse_file_with_content_internal(path, scan_root, raw_text, content_overrides)
+}
+
+fn parse_file_with_content_internal(
+    path: &Path,
+    scan_root: &Path,
+    raw_text: String,
+    content_overrides: Arc<HashMap<PathBuf, String>>,
 ) -> Result<ParsedFile, ParseDiagnostic> {
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let lower = filename.to_ascii_lowercase();
@@ -146,6 +175,7 @@ pub fn parse_file_with_content(
         content,
         raw_text,
         parse_diagnostics: RefCell::new(Vec::new()),
+        content_overrides,
     })
 }
 

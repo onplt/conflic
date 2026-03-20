@@ -9,6 +9,106 @@ mod atomic_impl;
 #[path = "patcher/preview.rs"]
 mod preview_impl;
 
+pub(crate) fn rewrite_env_assignment_line(
+    original: &str,
+    line: usize,
+    key: &str,
+    value: &str,
+) -> Result<String, String> {
+    let Some(eq_pos) = original.find('=') else {
+        return Err(format!("Line {} is not a KEY=value assignment", line));
+    };
+    let (lhs, rhs) = original.split_at(eq_pos + 1);
+    let normalized = lhs
+        .trim()
+        .strip_prefix("export ")
+        .unwrap_or_else(|| lhs.trim());
+    if normalized.trim_end_matches('=').trim() != key {
+        return Err(format!("Line {} does not match env key {}", line, key));
+    }
+
+    let layout = analyze_env_value_layout(rhs);
+    let rendered_value = match layout.quote {
+        Some(quote) => format!("{quote}{value}{quote}"),
+        None => value.to_string(),
+    };
+
+    Ok(format!(
+        "{}{}{}{}",
+        lhs, layout.leading, rendered_value, layout.trailing
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnvValueLayout<'a> {
+    leading: &'a str,
+    trailing: &'a str,
+    quote: Option<char>,
+}
+
+fn analyze_env_value_layout(rhs: &str) -> EnvValueLayout<'_> {
+    let leading_len = rhs
+        .char_indices()
+        .find_map(|(index, ch)| (!ch.is_whitespace()).then_some(index))
+        .unwrap_or(rhs.len());
+    let comment_start = env_inline_comment_start(rhs).unwrap_or(rhs.len());
+    let value_end = rhs[..comment_start].trim_end().len();
+    let token = &rhs[leading_len..value_end];
+    let quote = matching_env_quote(token);
+
+    EnvValueLayout {
+        leading: &rhs[..leading_len],
+        trailing: &rhs[value_end..],
+        quote,
+    }
+}
+
+fn env_inline_comment_start(rhs: &str) -> Option<usize> {
+    let mut in_single_quotes = false;
+    let mut in_double_quotes = false;
+    let mut escaped = false;
+    let mut previous_is_whitespace = true;
+
+    for (index, ch) in rhs.char_indices() {
+        if escaped {
+            escaped = false;
+            previous_is_whitespace = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_double_quotes => {
+                escaped = true;
+                previous_is_whitespace = false;
+            }
+            '\'' if !in_double_quotes => {
+                in_single_quotes = !in_single_quotes;
+                previous_is_whitespace = false;
+            }
+            '"' if !in_single_quotes => {
+                in_double_quotes = !in_double_quotes;
+                previous_is_whitespace = false;
+            }
+            '#' if !in_single_quotes && !in_double_quotes && previous_is_whitespace => {
+                return Some(index);
+            }
+            other => previous_is_whitespace = other.is_whitespace(),
+        }
+    }
+
+    None
+}
+
+fn matching_env_quote(token: &str) -> Option<char> {
+    let mut chars = token.chars();
+    let quote = chars.next()?;
+    if matches!(quote, '"' | '\'') && token.len() >= 2 && token.ends_with(quote) {
+        Some(quote)
+    } else {
+        None
+    }
+}
+
 /// Result of applying fixes.
 #[derive(Debug)]
 pub struct ApplyResult {
@@ -187,6 +287,26 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_env_fix_preserves_quotes_and_inline_comments() {
+        let content = "export PORT = \"3000\"  # keep comment\nNAME=demo\n";
+        let proposal = make_proposal(
+            1,
+            "3000",
+            "8080",
+            FixOperation::ReplaceEnvValue {
+                key: "PORT".into(),
+                value: "8080".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(
+            result,
+            "export PORT = \"8080\"  # keep comment\nNAME=demo\n"
+        );
+    }
+
+    #[test]
     fn test_apply_docker_from_fix_preserves_stage_alias() {
         let content = "FROM node:18-alpine AS build\nRUN npm ci\n";
         let proposal = make_proposal(
@@ -200,6 +320,25 @@ mod tests {
 
         let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
         assert_eq!(result, "FROM node:20-alpine AS build\nRUN npm ci\n");
+    }
+
+    #[test]
+    fn test_apply_docker_from_fix_rewrites_multiline_instruction_once() {
+        let content = "FROM --platform=linux/amd64 \\\n  node:18-alpine AS build\nRUN npm ci\n";
+        let proposal = make_proposal(
+            1,
+            "--platform=linux/amd64 node:18-alpine AS build",
+            "--platform=linux/amd64 node:20-alpine AS build",
+            FixOperation::ReplaceDockerFromArguments {
+                arguments: "--platform=linux/amd64 node:20-alpine AS build".into(),
+            },
+        );
+
+        let result = apply_impl::apply_fix_to_content(content, &proposal).unwrap();
+        assert_eq!(
+            result,
+            "FROM --platform=linux/amd64 node:20-alpine AS build\nRUN npm ci\n"
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub struct ConflicConfig {
     #[serde(skip)]
     config_path: Option<PathBuf>,
     #[serde(skip)]
+    scan_root: Option<PathBuf>,
+    #[serde(skip)]
     custom_extractor_cache_hash: u64,
 }
 
@@ -116,6 +118,7 @@ impl ConflicConfig {
         dir: &Path,
         explicit_path: Option<&Path>,
     ) -> std::result::Result<Self, ConfigError> {
+        let scan_root = crate::pathing::normalize_root(dir);
         let config_path = if let Some(path) = explicit_path {
             resolve_explicit_config_path(dir, path)
         } else {
@@ -132,9 +135,12 @@ impl ConflicConfig {
                     path: config_path.clone(),
                     source,
                 })?;
-            Self::parse_loaded_config(config_path, &content)
+            Self::parse_loaded_config(scan_root, config_path, &content)
         } else {
-            Ok(ConflicConfig::default())
+            Ok(ConflicConfig {
+                scan_root: Some(scan_root),
+                ..ConflicConfig::default()
+            })
         }
     }
 
@@ -143,13 +149,14 @@ impl ConflicConfig {
         explicit_path: Option<&Path>,
         content: &str,
     ) -> std::result::Result<Self, ConfigError> {
+        let scan_root = crate::pathing::normalize_root(dir);
         let config_path = if let Some(path) = explicit_path {
             resolve_explicit_config_path(dir, path)
         } else {
             dir.join(".conflic.toml")
         };
 
-        Self::parse_loaded_config(config_path, content)
+        Self::parse_loaded_config(scan_root, config_path, content)
     }
 
     pub fn should_skip_concept(&self, concept_id: &str) -> bool {
@@ -227,6 +234,7 @@ impl ConflicConfig {
         crate::extract::custom::compile_custom_extractors(
             &self.custom_extractor,
             self.config_path.as_deref(),
+            self.scan_root.as_deref(),
         )
     }
 
@@ -234,6 +242,7 @@ impl ConflicConfig {
         let (extractors, diagnostics) = crate::extract::custom::compile_custom_extractors(
             &self.custom_extractor,
             self.config_path.as_deref(),
+            self.scan_root.as_deref(),
         );
         self.custom_extractor_cache_hash =
             crate::extract::custom::custom_config_hash(&self.custom_extractor);
@@ -248,6 +257,7 @@ impl ConflicConfig {
     }
 
     fn parse_loaded_config(
+        scan_root: PathBuf,
         config_path: PathBuf,
         content: &str,
     ) -> std::result::Result<Self, ConfigError> {
@@ -257,6 +267,7 @@ impl ConflicConfig {
                 source,
             })?;
         config.config_path = Some(config_path);
+        config.scan_root = Some(scan_root);
         config.refresh_custom_extractor_cache();
         Ok(config)
     }
@@ -335,7 +346,7 @@ skip_concepts = []
 # package_roots = ["packages/*", "apps/*"]
 # global_concepts = ["node-version", "ts-strict-mode"]
 
-# Custom extractors — define your own concepts without writing Rust
+# Custom extractors - define your own concepts without writing Rust
 # [[custom_extractor]]
 # concept = "redis-version"
 # display_name = "Redis Version"
@@ -436,6 +447,17 @@ authority = "declared"
                 .any(|diagnostic| diagnostic.rule_id == "CONFIG001"),
             "expected structured custom extractor diagnostics, got {:?}",
             config.config_diagnostics()
+        );
+    }
+
+    #[test]
+    fn test_generate_template_uses_ascii_custom_extractor_comment() {
+        let template = generate_template();
+
+        assert!(
+            template.contains("Custom extractors - define your own concepts without writing Rust"),
+            "expected ASCII custom extractor comment, got:\n{}",
+            template
         );
     }
 }

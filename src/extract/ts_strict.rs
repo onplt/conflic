@@ -263,11 +263,11 @@ fn parse_eslint_flat_config(raw: &str) -> Result<serde_json::Value, String> {
 fn exported_expression(raw: &str) -> &str {
     let trimmed = raw.trim();
 
-    if let Some(index) = trimmed.find("export default") {
+    if let Some(index) = find_top_level_pattern(trimmed, "export default") {
         return &trimmed[index + "export default".len()..];
     }
 
-    if let Some(index) = trimmed.find("module.exports") {
+    if let Some(index) = find_top_level_pattern(trimmed, "module.exports") {
         let remainder = &trimmed[index + "module.exports".len()..];
         let remainder = remainder.trim_start();
         if let Some(remainder) = remainder.strip_prefix('=') {
@@ -277,6 +277,89 @@ fn exported_expression(raw: &str) -> &str {
     }
 
     trimmed
+}
+
+fn find_top_level_pattern(text: &str, pattern: &str) -> Option<usize> {
+    let mut chars = text.char_indices().peekable();
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+
+    while let Some((index, ch)) = chars.next() {
+        if let Some(quote) = in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => escaped = true,
+                current if current == quote => in_string = None,
+                _ => {}
+            }
+            continue;
+        }
+
+        if ch == '/' {
+            match chars.peek().map(|(_, next)| *next) {
+                Some('/') => {
+                    chars.next();
+                    for (_, comment_char) in chars.by_ref() {
+                        if comment_char == '\n' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut previous = '\0';
+                    for (_, comment_char) in chars.by_ref() {
+                        if previous == '*' && comment_char == '/' {
+                            break;
+                        }
+                        previous = comment_char;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        match ch {
+            '\'' | '"' | '`' => {
+                in_string = Some(ch);
+                continue;
+            }
+            _ => {}
+        }
+
+        if text[index..].starts_with(pattern)
+            && is_pattern_boundary_before(text, index)
+            && is_pattern_boundary_after(text, index + pattern.len())
+        {
+            return Some(index);
+        }
+    }
+
+    None
+}
+
+fn is_pattern_boundary_before(text: &str, index: usize) -> bool {
+    text[..index]
+        .chars()
+        .next_back()
+        .is_none_or(|ch| !is_identifier_like(ch))
+}
+
+fn is_pattern_boundary_after(text: &str, index: usize) -> bool {
+    text[index..]
+        .chars()
+        .next()
+        .is_none_or(|ch| !is_identifier_like(ch))
+}
+
+fn is_identifier_like(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$' | '.')
 }
 
 fn unwrap_flat_config_wrappers(mut expression: &str) -> Result<&str, String> {
@@ -391,4 +474,53 @@ fn find_matching_delimiter(text: &str, open: char, close: char) -> Option<usize>
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_eslint_flat_config_ignores_export_default_in_comments() {
+        let parsed = parse_eslint_flat_config(
+            r#"
+// mention export default before the real statement
+export default [
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off'
+    }
+  }
+];
+"#,
+        )
+        .expect("flat config should parse");
+
+        assert_eq!(
+            parsed[0]["rules"]["@typescript-eslint/no-explicit-any"],
+            "off"
+        );
+    }
+
+    #[test]
+    fn parse_eslint_flat_config_ignores_module_exports_in_strings() {
+        let parsed = parse_eslint_flat_config(
+            r#"
+const note = "module.exports is mentioned here";
+module.exports = [
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off'
+    }
+  }
+];
+"#,
+        )
+        .expect("flat config should parse");
+
+        assert_eq!(
+            parsed[0]["rules"]["@typescript-eslint/no-explicit-any"],
+            "off"
+        );
+    }
 }

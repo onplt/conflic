@@ -7,6 +7,7 @@ use conflic::config::{self, ConflicConfig};
 use conflic::fix::FixPlan;
 use conflic::model::{ScanResult, Severity};
 use conflic::report;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -57,7 +58,7 @@ fn main() -> Result<()> {
     }
 
     // Resolve scan path
-    let scan_path = std::fs::canonicalize(&cli.path).unwrap_or_else(|_| cli.path.clone());
+    let scan_path = resolve_scan_path(&cli.path)?;
 
     // Load config
     let config = ConflicConfig::load(&scan_path, cli.config.as_deref())
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
         let changed: Vec<std::path::PathBuf> = stdin
             .lines()
             .filter(|l| !l.is_empty())
-            .map(|l| std::path::PathBuf::from(l.trim()))
+            .map(|l| std::path::PathBuf::from(l.trim_end_matches('\r')))
             .collect();
         if changed.is_empty() {
             if !cli.quiet {
@@ -242,4 +243,17 @@ fn filter_fix_plan_by_concept(plan: &mut FixPlan, concept_id: &str) {
     });
     plan.unfixable
         .retain(|item| conflic::config::concept_matches_selector(&item.concept.id, concept_id));
+}
+
+fn resolve_scan_path(path: &Path) -> Result<PathBuf> {
+    match std::fs::metadata(path) {
+        Ok(_) => std::fs::canonicalize(path)
+            .with_context(|| format!("Failed to resolve scan root {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!("Scan root does not exist: {}", path.display());
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to access scan root {}", path.display()))
+        }
+    }
 }

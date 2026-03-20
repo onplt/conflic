@@ -183,6 +183,19 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_json_string_handles_surrogate_pair_escapes_before_target() {
+        let input = r#"{"emoji":"\uD83D\uDE00","engines":{"node":"18"}}"#;
+        let output =
+            replace_json_string_preserving_format(input, &["engines".into(), "node".into()], "20")
+                .unwrap();
+
+        assert_eq!(
+            output,
+            r#"{"emoji":"\uD83D\uDE00","engines":{"node":"20"}}"#
+        );
+    }
+
+    #[test]
     fn test_json_value_offsets_ignore_comment_keys() {
         let input = "{\n  // \"node\": \"99\"\n  \"engines\": {\n    \"node\": \"18\"\n  }\n}\n";
         let offsets = json_value_offsets(input, &["engines".into(), "node".into()])

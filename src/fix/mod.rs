@@ -5,6 +5,7 @@ mod render;
 
 use crate::model::*;
 use crate::parse::FileFormat;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use planner::{all_values_mutually_equivalent, build_fix_operation, values_equivalent};
@@ -114,10 +115,31 @@ pub fn plan_fixes(result: &ScanResult) -> FixPlan {
             continue;
         }
 
+        let ambiguous_docker_expose_lines = ambiguous_docker_expose_lines(concept_result);
+        let mut reported_ambiguous_docker_expose_lines = HashSet::new();
+
         for assertion in &concept_result.assertions {
             if std::ptr::eq(assertion, winner) || values_equivalent(&assertion.value, &winner.value)
             {
                 continue;
+            }
+
+            if assertion.extractor_id == "port-dockerfile" {
+                let line_key = (assertion.source.file.clone(), assertion.source.line);
+                if ambiguous_docker_expose_lines.contains(&line_key) {
+                    if reported_ambiguous_docker_expose_lines.insert(line_key.clone()) {
+                        unfixable.push(UnfixableItem {
+                            concept: concept_result.concept.clone(),
+                            reason: format!(
+                                "{}:{} [{}]: Dockerfile EXPOSE line contains multiple port tokens; manual update required",
+                                line_key.0.display(),
+                                line_key.1,
+                                assertion.extractor_id
+                            ),
+                        });
+                    }
+                    continue;
+                }
             }
 
             let filename = assertion
@@ -167,6 +189,23 @@ pub fn plan_fixes(result: &ScanResult) -> FixPlan {
         proposals,
         unfixable,
     }
+}
+
+fn ambiguous_docker_expose_lines(concept_result: &ConceptResult) -> HashSet<(PathBuf, usize)> {
+    let mut counts: HashMap<(PathBuf, usize), usize> = HashMap::new();
+
+    for assertion in &concept_result.assertions {
+        if assertion.extractor_id == "port-dockerfile" {
+            *counts
+                .entry((assertion.source.file.clone(), assertion.source.line))
+                .or_default() += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .filter_map(|(line_key, count)| (count > 1).then_some(line_key))
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -105,7 +106,7 @@ pub(crate) fn run_scan_pipeline(
 ) -> ScanPipeline {
     let preparation = prepare_scan(root, config);
     let normalized_overrides =
-        content_overrides.map(|overrides| normalize_content_overrides(root, overrides));
+        content_overrides.map(|overrides| Arc::new(normalize_content_overrides(root, overrides)));
     let mut file_outcomes = process_file_plans(
         root,
         &preparation.file_plans,
@@ -130,10 +131,12 @@ pub(crate) fn run_diff_scan_pipeline(
 ) -> ScanPipeline {
     let changed_normalized = normalize_changed_files(root, changed_files);
     let preparation = prepare_extractors(config);
-    let config_changed = changed_normalized.contains(&crate::pathing::normalize_for_workspace(
-        root,
-        &config.resolved_config_path(root),
-    ));
+    let normalized_config_path =
+        crate::pathing::normalize_for_workspace(root, &config.resolved_config_path(root));
+    let config_changed = changed_files
+        .iter()
+        .map(|path| crate::pathing::normalize_for_workspace(root, path))
+        .any(|path| path == normalized_config_path);
 
     let mut impacted_concepts = HashSet::new();
     let mut changed_plans = Vec::new();
@@ -215,7 +218,7 @@ pub(crate) fn process_file_plans(
     root: &Path,
     plans: &[FileScanPlan],
     extractors: &[Box<dyn Extractor>],
-    content_overrides: Option<&HashMap<PathBuf, String>>,
+    content_overrides: Option<&Arc<HashMap<PathBuf, String>>>,
 ) -> Vec<ScannedFile> {
     plans
         .par_iter()
@@ -227,7 +230,7 @@ fn process_file_plan(
     root: &Path,
     plan: &FileScanPlan,
     extractors: &[Box<dyn Extractor>],
-    content_overrides: Option<&HashMap<PathBuf, String>>,
+    content_overrides: Option<&Arc<HashMap<PathBuf, String>>>,
 ) -> ScannedFile {
     let matched_extractors: Vec<String> = plan
         .extractor_indices
@@ -246,9 +249,13 @@ fn process_file_plan(
         };
     }
 
-    let parsed = match content_overrides.and_then(|overrides| overrides.get(&plan.normalized_path))
-    {
-        Some(raw_text) => parse::parse_file_with_content(&plan.path, root, raw_text.clone()),
+    let parsed = match content_overrides {
+        Some(overrides) => parse::parse_file_with_shared_context(
+            &plan.path,
+            root,
+            overrides.get(&plan.normalized_path).cloned(),
+            Arc::clone(overrides),
+        ),
         None => parse::parse_file(&plan.path, root),
     };
 

@@ -1,10 +1,16 @@
+/// Return the first non-empty, non-comment line and its 1-based line number.
+pub fn first_meaningful_line(raw: &str) -> Option<(usize, String)> {
+    raw.lines().enumerate().find_map(|(index, line)| {
+        let trimmed = line.trim();
+        (!trimmed.is_empty() && !trimmed.starts_with('#')).then(|| (index + 1, trimmed.to_string()))
+    })
+}
+
 /// Parse a plain text file, returning the first non-empty, non-comment line trimmed.
 pub fn parse_plain_text(raw: &str) -> String {
-    raw.lines()
-        .map(|l| l.trim())
-        .find(|l| !l.is_empty() && !l.starts_with('#'))
-        .unwrap_or("")
-        .to_string()
+    first_meaningful_line(raw)
+        .map(|(_, value)| value)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -24,5 +30,13 @@ mod tests {
     #[test]
     fn test_parse_with_whitespace() {
         assert_eq!(parse_plain_text("  3.12  \n"), "3.12");
+    }
+
+    #[test]
+    fn test_first_meaningful_line_tracks_original_line_number() {
+        assert_eq!(
+            first_meaningful_line("# comment\n\n  20 \n"),
+            Some((3, "20".to_string()))
+        );
     }
 }

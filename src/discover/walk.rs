@@ -46,9 +46,6 @@ const KNOWN_CONFIG_FILES: &[&str] = &[
 /// Filename prefixes that match config files.
 const CONFIG_PREFIXES: &[&str] = &["Dockerfile", ".env."];
 
-/// File extensions for CI/CD configs.
-const CI_DIRS: &[&str] = &[".github/workflows", ".gitlab-ci", ".circleci"];
-
 impl FileDiscoverer {
     pub fn new(
         root: &Path,
@@ -189,18 +186,7 @@ impl FileDiscoverer {
             return true;
         }
 
-        // CI/CD yaml files
-        let normalized_path = normalize_path_for_match(path);
-        for ci_dir in CI_DIRS {
-            if normalized_path.contains(ci_dir)
-                && (filename.ends_with(".yml") || filename.ends_with(".yaml"))
-            {
-                return true;
-            }
-        }
-
-        // .gitlab-ci.yml at root
-        if filename == ".gitlab-ci.yml" {
+        if crate::pathing::classify_ci_config_path(&self.root, path).is_some() {
             return true;
         }
 

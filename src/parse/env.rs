@@ -13,14 +13,12 @@ pub fn parse_env(raw: &str) -> Vec<EnvEntry> {
         }
 
         // Strip optional "export " prefix
-        let stripped = trimmed
-            .strip_prefix("export ")
-            .unwrap_or(trimmed);
+        let stripped = trimmed.strip_prefix("export ").unwrap_or(trimmed);
 
         // Split on first '='
         if let Some((key, value)) = stripped.split_once('=') {
             let key = key.trim().to_string();
-            let value = unquote(value.trim());
+            let value = unquote(strip_inline_comment(value.trim()).trim());
             entries.push(EnvEntry {
                 key,
                 value,
@@ -33,11 +31,51 @@ pub fn parse_env(raw: &str) -> Vec<EnvEntry> {
 }
 
 fn unquote(s: &str) -> String {
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         s[1..s.len() - 1].to_string()
     } else {
         s.to_string()
     }
+}
+
+fn strip_inline_comment(s: &str) -> &str {
+    let mut in_single_quotes = false;
+    let mut in_double_quotes = false;
+    let mut escaped = false;
+    let mut previous_is_whitespace = true;
+
+    for (idx, ch) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            previous_is_whitespace = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_double_quotes => {
+                escaped = true;
+                previous_is_whitespace = false;
+            }
+            '\'' if !in_double_quotes => {
+                in_single_quotes = !in_single_quotes;
+                previous_is_whitespace = false;
+            }
+            '"' if !in_single_quotes => {
+                in_double_quotes = !in_double_quotes;
+                previous_is_whitespace = false;
+            }
+            '#' if !in_single_quotes && !in_double_quotes && previous_is_whitespace => {
+                return s[..idx].trim_end();
+            }
+            other => {
+                previous_is_whitespace = other.is_whitespace();
+            }
+        }
+    }
+
+    s.trim_end()
 }
 
 #[cfg(test)]
@@ -55,5 +93,24 @@ mod tests {
         assert_eq!(entries[1].value, "localhost");
         assert_eq!(entries[2].key, "DEBUG");
         assert_eq!(entries[2].value, "true");
+    }
+
+    #[test]
+    fn test_parse_env_strips_unquoted_inline_comments() {
+        let input = "PORT=8080 # app port\nAPP_PORT='9090' # quoted\n";
+        let entries = parse_env(input);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].value, "8080");
+        assert_eq!(entries[1].value, "9090");
+    }
+
+    #[test]
+    fn test_parse_env_preserves_hashes_inside_quotes() {
+        let input = "MESSAGE=\"hello # still here\"\n";
+        let entries = parse_env(input);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].value, "hello # still here");
     }
 }

@@ -13,20 +13,16 @@ pub struct Cli {
     pub path: PathBuf,
 
     /// Output format
-    #[arg(long, short, default_value = "terminal", value_enum)]
-    pub format: OutputFormat,
+    #[arg(long, short, value_enum)]
+    pub format: Option<OutputFormat>,
 
     /// Minimum severity to report
-    #[arg(long, short, default_value = "warning", value_enum)]
-    pub severity: SeverityFilter,
+    #[arg(long, short, value_enum)]
+    pub severity: Option<SeverityFilter>,
 
     /// Only check specific concept(s), comma-separated
     #[arg(long, value_delimiter = ',')]
     pub check: Option<Vec<String>>,
-
-    /// Show explanations for each rule
-    #[arg(long)]
-    pub explain: bool,
 
     /// Create a template .conflic.toml in the target directory
     #[arg(long)]
@@ -97,14 +93,14 @@ pub struct Cli {
     pub lsp: bool,
 }
 
-#[derive(ValueEnum, Clone, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
     Terminal,
     Json,
     Sarif,
 }
 
-#[derive(ValueEnum, Clone, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeverityFilter {
     Error,
     Warning,

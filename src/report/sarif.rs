@@ -1,5 +1,6 @@
 use crate::model::*;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 pub fn render(result: &ScanResult) -> String {
     let sarif = SarifLog::from(result);
@@ -92,18 +93,82 @@ fn severity_to_sarif_level(severity: Severity) -> String {
     }
 }
 
-fn path_to_uri(path: &std::path::Path) -> String {
-    // Convert to relative path if possible, use forward slashes
-    let display = if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(rel) = path.strip_prefix(&cwd) {
-            rel.to_string_lossy().to_string()
-        } else {
-            path.to_string_lossy().to_string()
+fn path_to_uri(path: &Path) -> String {
+    let sanitized = sanitize_path(path);
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let sanitized_cwd = sanitize_path(&cwd);
+        if let Ok(rel) = sanitized.strip_prefix(&sanitized_cwd) {
+            return rel.to_string_lossy().replace('\\', "/");
         }
+    }
+
+    absolute_path_to_file_uri(&sanitized)
+}
+
+fn sanitize_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{}", stripped));
+    }
+
+    if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        return PathBuf::from(stripped);
+    }
+
+    path.to_path_buf()
+}
+
+fn absolute_path_to_file_uri(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let encoded = encode_uri_component(&normalized);
+
+    if normalized.starts_with("//") {
+        format!("file:{}", encoded)
+    } else if normalized.starts_with('/') {
+        format!("file://{}", encoded)
+    } else if normalized.as_bytes().get(1) == Some(&b':') {
+        format!("file:///{}", encoded)
     } else {
-        path.to_string_lossy().to_string()
-    };
-    display.replace('\\', "/")
+        encoded
+    }
+}
+
+fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+
+    encoded
+}
+
+fn parse_rule_metadata(rule_id: &str) -> (&'static str, &'static str) {
+    match rule_id {
+        "PARSE001" => (
+            "Configuration parse failure",
+            "A configuration file could not be read or parsed.",
+        ),
+        "PARSE002" => (
+            "Unsafe extends resolution",
+            "A JSON extends reference could not be resolved safely inside the scan root.",
+        ),
+        "CONFIG001" => (
+            "Invalid custom extractor configuration",
+            "A custom extractor pattern could not be compiled or validated.",
+        ),
+        _ => (
+            "Configuration diagnostic",
+            "A configuration diagnostic was reported.",
+        ),
+    }
 }
 
 impl From<&ScanResult> for SarifLog {
@@ -173,6 +238,39 @@ impl From<&ScanResult> for SarifLog {
             }
         }
 
+        for diagnostic in &result.parse_diagnostics {
+            if seen_rules.insert(diagnostic.rule_id.clone()) {
+                let (name, description) = parse_rule_metadata(&diagnostic.rule_id);
+                rules.push(SarifRule {
+                    id: diagnostic.rule_id.clone(),
+                    name: name.into(),
+                    short_description: SarifMessage {
+                        text: description.into(),
+                    },
+                });
+            }
+
+            results.push(SarifResult {
+                rule_id: diagnostic.rule_id.clone(),
+                level: severity_to_sarif_level(diagnostic.severity),
+                message: SarifMessage {
+                    text: diagnostic.message.clone(),
+                },
+                locations: vec![SarifLocation {
+                    physical_location: SarifPhysicalLocation {
+                        artifact_location: SarifArtifactLocation {
+                            uri: path_to_uri(&diagnostic.file),
+                        },
+                        region: SarifRegion {
+                            start_line: 1,
+                            start_column: 1,
+                        },
+                    },
+                }],
+                related_locations: vec![],
+            });
+        }
+
         SarifLog {
             schema: "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json".into(),
             version: "2.1.0".into(),
@@ -188,5 +286,16 @@ impl From<&ScanResult> for SarifLog {
                 results,
             }],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_to_uri_strips_windows_extended_length_prefix() {
+        let uri = path_to_uri(Path::new(r"\\?\C:\workspace\package.json"));
+        assert_eq!(uri, "file:///C:/workspace/package.json");
     }
 }

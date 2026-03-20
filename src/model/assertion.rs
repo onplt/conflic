@@ -4,6 +4,16 @@ use std::path::PathBuf;
 use super::concept::SemanticConcept;
 use super::semantic_type::SemanticType;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
 /// Where in the source tree a value was found.
 #[derive(Debug, Clone)]
 pub struct SourceLocation {
@@ -52,6 +62,7 @@ pub struct ConfigAssertion {
     pub value: SemanticType,
     pub raw_value: String,
     pub source: SourceLocation,
+    pub span: Option<SourceSpan>,
     pub authority: Authority,
     pub extractor_id: String,
     pub is_matrix: bool,
@@ -71,10 +82,27 @@ impl ConfigAssertion {
             value,
             raw_value,
             source,
+            span: None,
             authority,
             extractor_id: extractor_id.into(),
             is_matrix: false,
         }
+    }
+
+    pub fn with_span(mut self, span: SourceSpan) -> Self {
+        self.source.line = span.line;
+        self.source.column = span.column;
+        self.span = Some(span);
+        self
+    }
+
+    pub fn with_optional_span(mut self, span: Option<SourceSpan>) -> Self {
+        if let Some(span) = span {
+            self.source.line = span.line;
+            self.source.column = span.column;
+            self.span = Some(span);
+        }
+        self
     }
 
     pub fn with_matrix(mut self, is_matrix: bool) -> Self {

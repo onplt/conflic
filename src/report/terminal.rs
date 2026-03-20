@@ -6,25 +6,27 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
     let mut output = String::new();
 
     // Header
-    output.push_str(&format!("conflic v{} — scanning\n\n", env!("CARGO_PKG_VERSION")));
+    output.push_str(&format!(
+        "conflic v{} — scanning\n\n",
+        env!("CARGO_PKG_VERSION")
+    ));
 
-    // Parse errors
-    if !result.parse_errors.is_empty() {
-        output.push_str("Parse Warnings:\n");
-        for err in &result.parse_errors {
-            if no_color {
-                output.push_str(&format!("  WARN  {}\n", err));
-            } else {
-                output.push_str(&format!("  {}  {}\n", "WARN".yellow(), err));
-            }
+    // Parse diagnostics
+    if !result.parse_diagnostics.is_empty() {
+        output.push_str("Parse Diagnostics:\n");
+        for diagnostic in &result.parse_diagnostics {
+            let severity_str = format_severity(diagnostic.severity, no_color);
+            output.push_str(&format!(
+                "  {}  {}: {}\n",
+                severity_str,
+                simplify_path(&diagnostic.file),
+                diagnostic.message
+            ));
         }
         output.push('\n');
     }
 
     let mut concepts_with_findings = 0;
-    let mut total_errors = 0;
-    let mut total_warnings = 0;
-    let mut total_info = 0;
     let mut concepts_checked = 0;
 
     for concept_result in &result.concept_results {
@@ -38,8 +40,7 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
         if no_color {
             output.push_str(&format!(
                 "{} [{}]\n",
-                concept_result.concept.display_name,
-                concept_result.concept.id
+                concept_result.concept.display_name, concept_result.concept.id
             ));
         } else {
             output.push_str(&format!(
@@ -81,19 +82,16 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
                 format!("  ({})", assertion.source.key_path)
             };
 
-            output.push_str(&format!("    {:<40} {}{}\n", loc, assertion.raw_value, key_info));
+            output.push_str(&format!(
+                "    {:<40} {}{}\n",
+                loc, assertion.raw_value, key_info
+            ));
         }
 
         // Show findings
         for finding in &concept_result.findings {
             let severity_str = format_severity(finding.severity, no_color);
             output.push_str(&format!("  {}  {}\n", severity_str, finding.explanation));
-
-            match finding.severity {
-                Severity::Error => total_errors += 1,
-                Severity::Warning => total_warnings += 1,
-                Severity::Info => total_info += 1,
-            }
         }
 
         output.push('\n');
@@ -101,9 +99,20 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
 
     // Summary line
     let separator = "─".repeat(50);
-    output.push_str(&format!("{}\n", if no_color { separator.clone() } else { separator.dimmed().to_string() }));
+    output.push_str(&format!(
+        "{}\n",
+        if no_color {
+            separator.clone()
+        } else {
+            separator.dimmed().to_string()
+        }
+    ));
 
     let mut parts = vec![format!("{} concepts checked", concepts_checked)];
+
+    let total_errors = result.error_count();
+    let total_warnings = result.warning_count();
+    let total_info = result.info_count();
 
     if total_errors > 0 {
         if no_color {
@@ -116,13 +125,16 @@ pub fn render(result: &ScanResult, no_color: bool, verbose: bool) -> String {
         if no_color {
             parts.push(format!("{} warning(s)", total_warnings));
         } else {
-            parts.push(format!("{}", format!("{} warning(s)", total_warnings).yellow()));
+            parts.push(format!(
+                "{}",
+                format!("{} warning(s)", total_warnings).yellow()
+            ));
         }
     }
     if total_info > 0 {
         parts.push(format!("{} info", total_info));
     }
-    if concepts_with_findings == 0 {
+    if concepts_with_findings == 0 && result.parse_diagnostics.is_empty() {
         if no_color {
             parts.push("no contradictions found".to_string());
         } else {
@@ -159,11 +171,27 @@ fn format_location(loc: &SourceLocation, no_color: bool) -> String {
 }
 
 fn simplify_path(path: &Path) -> String {
+    let sanitized = crate::pathing::strip_windows_extended_length_prefix(path);
+
     // Try to make path relative to current dir
     if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(rel) = path.strip_prefix(&cwd) {
+        let sanitized_cwd = crate::pathing::strip_windows_extended_length_prefix(&cwd);
+        if let Ok(rel) = sanitized.strip_prefix(&sanitized_cwd) {
             return rel.to_string_lossy().to_string();
         }
     }
-    path.to_string_lossy().to_string()
+
+    sanitized.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simplify_path_strips_windows_extended_length_prefix() {
+        let simplified = simplify_path(Path::new(r"\\?\C:\workspace\package.json"));
+
+        assert_eq!(simplified, r"C:\workspace\package.json");
+    }
 }

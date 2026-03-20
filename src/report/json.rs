@@ -10,6 +10,7 @@ pub fn render(result: &ScanResult) -> String {
 struct JsonOutput {
     version: String,
     concepts: Vec<JsonConcept>,
+    parse_diagnostics: Vec<JsonParseDiagnostic>,
     summary: JsonSummary,
 }
 
@@ -48,6 +49,14 @@ struct JsonFindingRef {
 }
 
 #[derive(Serialize)]
+struct JsonParseDiagnostic {
+    severity: String,
+    rule_id: String,
+    file: String,
+    message: String,
+}
+
+#[derive(Serialize)]
 struct JsonSummary {
     concepts_checked: usize,
     errors: usize,
@@ -67,7 +76,9 @@ impl From<&ScanResult> for JsonOutput {
                     .assertions
                     .iter()
                     .map(|a| JsonAssertion {
-                        file: a.source.file.to_string_lossy().to_string(),
+                        file: crate::pathing::strip_windows_extended_length_prefix(&a.source.file)
+                            .to_string_lossy()
+                            .to_string(),
                         line: a.source.line,
                         key_path: a.source.key_path.clone(),
                         raw_value: a.raw_value.clone(),
@@ -82,12 +93,20 @@ impl From<&ScanResult> for JsonOutput {
                         severity: f.severity.to_string().to_lowercase(),
                         rule_id: f.rule_id.clone(),
                         left: JsonFindingRef {
-                            file: f.left.source.file.to_string_lossy().to_string(),
+                            file: crate::pathing::strip_windows_extended_length_prefix(
+                                &f.left.source.file,
+                            )
+                            .to_string_lossy()
+                            .to_string(),
                             line: f.left.source.line,
                             value: f.left.raw_value.clone(),
                         },
                         right: JsonFindingRef {
-                            file: f.right.source.file.to_string_lossy().to_string(),
+                            file: crate::pathing::strip_windows_extended_length_prefix(
+                                &f.right.source.file,
+                            )
+                            .to_string_lossy()
+                            .to_string(),
                             line: f.right.source.line,
                             value: f.right.raw_value.clone(),
                         },
@@ -100,6 +119,18 @@ impl From<&ScanResult> for JsonOutput {
         JsonOutput {
             version: env!("CARGO_PKG_VERSION").to_string(),
             concepts,
+            parse_diagnostics: result
+                .parse_diagnostics
+                .iter()
+                .map(|d| JsonParseDiagnostic {
+                    severity: d.severity.to_string().to_lowercase(),
+                    rule_id: d.rule_id.clone(),
+                    file: crate::pathing::strip_windows_extended_length_prefix(&d.file)
+                        .to_string_lossy()
+                        .to_string(),
+                    message: d.message.clone(),
+                })
+                .collect(),
             summary: JsonSummary {
                 concepts_checked: result.concept_results.len(),
                 errors: result.error_count(),
@@ -107,5 +138,50 @@ impl From<&ScanResult> for JsonOutput {
                 info: result.info_count(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::assertion::{Authority, ConfigAssertion, SourceLocation};
+    use crate::model::concept::SemanticConcept;
+
+    #[test]
+    fn test_json_output_strips_windows_extended_length_prefix_from_file_paths() {
+        let assertion = ConfigAssertion::new(
+            SemanticConcept::node_version(),
+            crate::model::SemanticType::Version(crate::model::parse_version("20")),
+            "20".into(),
+            SourceLocation {
+                file: std::path::PathBuf::from(r"\\?\C:\workspace\.nvmrc"),
+                line: 1,
+                column: 0,
+                key_path: String::new(),
+            },
+            Authority::Advisory,
+            "node-version-nvmrc",
+        );
+
+        let result = ScanResult {
+            concept_results: vec![ConceptResult {
+                concept: SemanticConcept::node_version(),
+                assertions: vec![assertion],
+                findings: vec![],
+            }],
+            parse_diagnostics: vec![],
+        };
+
+        let output = render(&result);
+        assert!(
+            !output.contains(r"\\?\C:\workspace\.nvmrc"),
+            "json output should strip the extended-length prefix: {}",
+            output
+        );
+        assert!(
+            output.contains(r"C:\\workspace\\.nvmrc"),
+            "json output should keep the sanitized Windows path: {}",
+            output
+        );
     }
 }

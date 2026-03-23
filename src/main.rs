@@ -42,6 +42,61 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle --init-federation
+    if cli.init_federation {
+        let config_path = cli.path.join("conflic-federation.toml");
+        if config_path.exists() {
+            eprintln!(
+                "Error: conflic-federation.toml already exists at {}",
+                config_path.display()
+            );
+            process::exit(3);
+        }
+        std::fs::write(
+            &config_path,
+            conflic::federation::generate_federation_template(),
+        )
+        .with_context(|| format!("Failed to create {}", config_path.display()))?;
+        println!("Created {}", config_path.display());
+        return Ok(());
+    }
+
+    // Handle --federate
+    if let Some(ref fed_config_path) = cli.federate {
+        let report = conflic::federation::run_federation(fed_config_path)
+            .with_context(|| format!("Federation scan failed for {}", fed_config_path.display()))?;
+
+        let output_format = match cli.format {
+            Some(format) => format,
+            None => conflic::cli::OutputFormat::Terminal,
+        };
+
+        let output = match output_format {
+            conflic::cli::OutputFormat::Json => {
+                conflic::federation::render_federation_json(&report)
+            }
+            _ => conflic::federation::render_federation_report(&report, cli.no_color),
+        };
+
+        print!("{}", output);
+
+        if report.summary.total_errors > 0 || report.summary.cross_repo_drifts > 0 {
+            process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // Handle --trend (show history trend, no scan needed)
+    if cli.trend {
+        let scan_path = resolve_scan_path(&cli.path)?;
+        let history = conflic::history::ScanHistory::load(&scan_path)
+            .with_context(|| "Failed to load scan history")?;
+        let trend = history.trend();
+        let output = conflic::history::render_trend(&trend, cli.no_color);
+        print!("{}", output);
+        return Ok(());
+    }
+
     // Handle --list-concepts
     if cli.list_concepts {
         let extractors = conflic::extract::default_extractors();
@@ -167,6 +222,34 @@ fn main() -> Result<()> {
         let baseline = conflic::baseline::load_baseline(baseline_path)
             .with_context(|| format!("Failed to load baseline {}", baseline_path.display()))?;
         conflic::baseline::filter_baselined(&mut result, &baseline, &scan_path);
+    }
+
+    // Record scan in history if requested
+    if cli.record {
+        let mut history = conflic::history::ScanHistory::load(&scan_path)
+            .with_context(|| "Failed to load scan history")?;
+        history.record_scan(&result, &scan_path);
+        history
+            .save(&scan_path)
+            .with_context(|| "Failed to save scan history")?;
+        if !cli.quiet {
+            eprintln!(
+                "Scan recorded ({} snapshots in history)",
+                history.snapshots.len()
+            );
+        }
+    }
+
+    // Filter findings by --since (git blame based)
+    if let Some(ref since_ref) = cli.since {
+        let since_report = conflic::history::filter_since(&mut result, &scan_path, since_ref)
+            .with_context(|| format!("Failed to filter findings since {}", since_ref))?;
+        if !cli.quiet {
+            eprintln!(
+                "Showing {} finding(s) introduced since {} ({} filtered)",
+                since_report.kept, since_ref, since_report.filtered
+            );
+        }
     }
 
     // Fix mode

@@ -1,11 +1,5 @@
 use crate::common::integration_helpers::*;
-use assert_cmd::Command as AssertCommand;
 use conflic::config::ConflicConfig;
-use conflic::fix::plan_fixes;
-use conflic::model::Severity;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 
 #[test]
 fn test_monorepo_prefers_more_specific_package_roots() {

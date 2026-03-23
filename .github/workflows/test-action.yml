@@ -1,0 +1,205 @@
+name: Test Action
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "action.yml"
+      - "scripts/**"
+      - ".github/workflows/test-action.yml"
+
+jobs:
+  test-clean:
+    name: "Test: clean project (exit 0)"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create clean workspace
+        shell: bash
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          cat > test-workspace/package.json << 'EOF'
+          { "engines": { "node": "20" } }
+          EOF
+
+      - name: Run conflic (expect pass)
+        uses: ./
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: error
+          sarif-upload: false
+
+  test-error-gate:
+    name: "Test: error gate (exit 1)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create contradictory workspace
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          cat > test-workspace/Dockerfile << 'EOF'
+          FROM node:18-alpine
+          EXPOSE 3000
+          EOF
+          cat > test-workspace/package.json << 'EOF'
+          { "engines": { "node": "22" } }
+          EOF
+
+      - name: Run conflic (expect failure)
+        id: conflic
+        uses: ./
+        continue-on-error: true
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: error
+          sarif-upload: false
+
+      - name: Assert failure
+        run: |
+          if [ "${{ steps.conflic.outcome }}" != "failure" ]; then
+            echo "::error::Expected conflic to fail but it passed"
+            exit 1
+          fi
+          echo "conflic correctly failed with contradictions"
+
+  test-warning-passthrough:
+    name: "Test: warnings pass with fail-on=error"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create workspace with advisory contradiction
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          echo '18' > test-workspace/.node-version
+
+      - name: Run conflic (expect pass — advisory only)
+        uses: ./
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: error
+          sarif-upload: false
+
+  test-fail-on-none:
+    name: "Test: fail-on=none never fails"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create contradictory workspace
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          cat > test-workspace/Dockerfile << 'EOF'
+          FROM node:18-alpine
+          EXPOSE 3000
+          EOF
+
+      - name: Run conflic (expect pass — fail-on=none)
+        uses: ./
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: none
+          sarif-upload: false
+
+  test-outputs:
+    name: "Test: action outputs are set"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create contradictory workspace
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          cat > test-workspace/Dockerfile << 'EOF'
+          FROM node:18-alpine
+          EXPOSE 3000
+          EOF
+
+      - name: Run conflic
+        id: conflic
+        uses: ./
+        continue-on-error: true
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: none
+          sarif-upload: false
+
+      - name: Check outputs
+        run: |
+          echo "exit-code: ${{ steps.conflic.outputs.exit-code }}"
+          echo "error-count: ${{ steps.conflic.outputs.error-count }}"
+          echo "warning-count: ${{ steps.conflic.outputs.warning-count }}"
+          if [ -z "${{ steps.conflic.outputs.exit-code }}" ]; then
+            echo "::error::exit-code output not set"
+            exit 1
+          fi
+
+  test-diff-mode:
+    name: "Test: diff mode"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run conflic with diff
+        uses: ./
+        with:
+          diff: HEAD~1
+          severity: info
+          fail-on: none
+          sarif-upload: false
+
+  test-sarif:
+    name: "Test: SARIF generation"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create workspace
+        run: |
+          mkdir -p test-workspace
+          echo '20' > test-workspace/.nvmrc
+          echo '18' > test-workspace/.node-version
+
+      - name: Run conflic with SARIF
+        id: conflic
+        uses: ./
+        with:
+          path: test-workspace
+          severity: info
+          fail-on: none
+          sarif-upload: false
+
+      - name: Verify SARIF file
+        run: |
+          SARIF="${{ steps.conflic.outputs.sarif-file }}"
+          if [ -z "$SARIF" ]; then
+            echo "::error::SARIF file path not set"
+            exit 1
+          fi
+          if [ ! -f "$SARIF" ]; then
+            echo "::error::SARIF file does not exist at ${SARIF}"
+            exit 1
+          fi
+          # Validate it's valid JSON with SARIF schema indicator
+          if ! grep -q '"sarif"' "$SARIF" 2>/dev/null && ! grep -q '\$schema' "$SARIF" 2>/dev/null; then
+            echo "::warning::SARIF file may not contain valid SARIF content"
+          fi
+          echo "SARIF file generated successfully"

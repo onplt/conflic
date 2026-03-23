@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub mod e2e_helpers;
 pub mod integration_helpers;
 use assert_cmd::Command;

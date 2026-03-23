@@ -118,10 +118,5 @@ pub(super) fn render_dry_run(plan: &FixPlan, no_color: bool) -> String {
 }
 
 fn simplify_path(path: &Path) -> String {
-    if let Ok(cwd) = std::env::current_dir()
-        && let Ok(relative) = path.strip_prefix(&cwd)
-    {
-        return relative.to_string_lossy().to_string();
-    }
-    path.to_string_lossy().to_string()
+    crate::pathing::simplify_path(path)
 }

@@ -302,6 +302,7 @@ mod tests {
                 display_name: "Redis Version".into(),
                 category: "runtime-version".into(),
                 value_type: "version".into(),
+                solver: None,
                 source: vec![],
             },
             0,
@@ -335,6 +336,7 @@ mod tests {
                 display_name: "Redis Version".into(),
                 category: "runtime-version".into(),
                 value_type: "version".into(),
+                solver: None,
                 source: vec![],
             },
             0,
@@ -368,6 +370,7 @@ mod tests {
                 display_name: "Redis Version".into(),
                 category: "runtime-version".into(),
                 value_type: "version".into(),
+                solver: None,
                 source: vec![],
             },
             0,
@@ -391,6 +394,7 @@ mod tests {
             display_name: "Redis Version".into(),
             category: "runtime-version".into(),
             value_type: "version".into(),
+            solver: None,
             source: vec![CustomSourceConfig {
                 file: "*.json".into(),
                 format: "json".into(),
@@ -427,6 +431,7 @@ mod tests {
             display_name: "Redis Version".into(),
             category: "runtime-version".into(),
             value_type: "version".into(),
+            solver: None,
             source: vec![CustomSourceConfig {
                 file: "[*.json".into(),
                 format: "json".into(),
@@ -463,6 +468,7 @@ mod tests {
             display_name: "Redis Version".into(),
             category: "runtime-version".into(),
             value_type: "version".into(),
+            solver: None,
             source: vec![CustomSourceConfig {
                 file: "docker-compose.yml".into(),
                 format: "yamll".into(),

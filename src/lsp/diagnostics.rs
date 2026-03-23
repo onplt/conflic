@@ -144,7 +144,7 @@ fn add_parse_diagnostic(
     }
 }
 
-fn make_range(source: &SourceLocation, span: Option<&SourceSpan>) -> Range {
+pub(super) fn make_range(source: &SourceLocation, span: Option<&SourceSpan>) -> Range {
     if let Some(span) = span {
         return Range {
             start: Position {

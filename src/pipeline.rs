@@ -292,10 +292,27 @@ fn build_scan_result(
     assertions: Vec<ConfigAssertion>,
     parse_diagnostics: Vec<ParseDiagnostic>,
 ) -> ScanResult {
-    let concept_results = solve::compare_assertions(root, assertions, config);
+    let solvers = build_solver_registry(config);
+    let mut concept_results =
+        solve::compare_assertions_with_solvers(root, assertions, config, &solvers);
+
+    crate::policy::evaluate_policies(&mut concept_results, config);
+    crate::graph::evaluate_concept_rules(&mut concept_results, config);
 
     ScanResult {
         concept_results,
         parse_diagnostics,
     }
+}
+
+fn build_solver_registry(config: &ConflicConfig) -> solve::SolverRegistry {
+    let mut registry = solve::SolverRegistry::new();
+    for custom in &config.custom_extractor {
+        if let Some(ref solver_name) = custom.solver
+            && let Some(solver) = solve::registry::solver_from_name(solver_name)
+        {
+            registry.register(custom.concept.clone(), solver);
+        }
+    }
+    registry
 }

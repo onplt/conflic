@@ -1,10 +1,5 @@
-use crate::common::e2e_helpers::*;
 use crate::common::{TestWorkspace, conflic_cmd, conflic_cmd_in};
 use predicates::prelude::*;
-use std::path::Path;
-use std::process::{Command as ProcessCommand, Stdio};
-#[cfg(feature = "lsp")]
-use tower_lsp::lsp_types::Url;
 
 #[test]
 fn test_cli_init_creates_template_config() {

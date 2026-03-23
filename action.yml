@@ -1,0 +1,91 @@
+name: "conflic"
+description: "Detect semantic contradictions across config files — CI gate for configuration drift"
+author: "onplt"
+
+branding:
+  icon: "search"
+  color: "orange"
+
+inputs:
+  version:
+    description: "Conflic version to install (e.g., '1.0.1'). Use 'latest' for the most recent release."
+    required: false
+    default: "latest"
+  path:
+    description: "Directory to scan"
+    required: false
+    default: "."
+  severity:
+    description: "Minimum severity to report: error, warning, info"
+    required: false
+    default: "error"
+  fail-on:
+    description: "Severity threshold that causes the action to fail: error, warning, info, none"
+    required: false
+    default: "error"
+  diff:
+    description: "Git ref for diff-scoped scan. Use 'auto' to detect PR base automatically."
+    required: false
+    default: ""
+  sarif-upload:
+    description: "Upload SARIF results to GitHub Code Scanning"
+    required: false
+    default: "true"
+  baseline:
+    description: "Path to baseline file to suppress known findings"
+    required: false
+    default: ""
+  config:
+    description: "Path to .conflic.toml configuration file"
+    required: false
+    default: ""
+  args:
+    description: "Additional CLI arguments to pass to conflic"
+    required: false
+    default: ""
+
+outputs:
+  exit-code:
+    description: "Raw conflic exit code (0=clean, 1=errors, 2=warnings)"
+    value: ${{ steps.run.outputs.exit-code }}
+  error-count:
+    description: "Number of error-level findings"
+    value: ${{ steps.run.outputs.error-count }}
+  warning-count:
+    description: "Number of warning-level findings"
+    value: ${{ steps.run.outputs.warning-count }}
+  sarif-file:
+    description: "Path to generated SARIF file (if sarif-upload is enabled)"
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install conflic
+      shell: bash
+      run: ${{ github.action_path }}/scripts/install-conflic.sh
+      env:
+        CONFLIC_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ github.token }}
+
+    - name: Run conflic
+      id: run
+      shell: bash
+      run: ${{ github.action_path }}/scripts/run-conflic.sh
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_SEVERITY: ${{ inputs.severity }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_SARIF_UPLOAD: ${{ inputs.sarif-upload }}
+        INPUT_ARGS: ${{ inputs.args }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    - name: Upload SARIF
+      if: inputs.sarif-upload == 'true' && always() && steps.run.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.run.outputs.sarif-file }}
+        category: conflic

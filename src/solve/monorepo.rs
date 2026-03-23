@@ -5,11 +5,13 @@ use crate::config::ConflicConfig;
 use crate::model::{ConfigAssertion, Finding};
 
 use super::findings::{collect_findings_across, collect_findings_within, sort_findings};
+use super::solver_trait::Solver;
 
 pub(super) fn find_monorepo_contradictions(
     scan_root: &Path,
     assertions: &[ConfigAssertion],
     config: &ConflicConfig,
+    solver: Option<&dyn Solver>,
 ) -> Vec<Finding> {
     let mut findings = HashMap::new();
 
@@ -70,11 +72,17 @@ pub(super) fn find_monorepo_contradictions(
     }
 
     for package_assertions in by_package.values() {
-        collect_findings_within(package_assertions, config, &mut findings);
-        collect_findings_across(package_assertions, &root_level, config, &mut findings);
+        collect_findings_within(package_assertions, config, &mut findings, solver);
+        collect_findings_across(
+            package_assertions,
+            &root_level,
+            config,
+            &mut findings,
+            solver,
+        );
     }
 
-    collect_findings_within(&root_level, config, &mut findings);
+    collect_findings_within(&root_level, config, &mut findings, solver);
 
     sort_findings(findings)
 }

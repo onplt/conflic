@@ -4,15 +4,18 @@ use std::path::Path;
 use crate::config::ConflicConfig;
 use crate::model::*;
 
-use super::{Compatibility, boolean, port, severity, string, version};
+use super::registry;
+use super::solver_trait::Solver;
+use super::{Compatibility, severity};
 
 pub(super) fn find_contradictions(
     assertions: &[ConfigAssertion],
     config: &ConflicConfig,
+    solver: Option<&dyn Solver>,
 ) -> Vec<Finding> {
     let assertion_refs: Vec<&ConfigAssertion> = assertions.iter().collect();
     let mut findings = HashMap::new();
-    collect_findings_within(&assertion_refs, config, &mut findings);
+    collect_findings_within(&assertion_refs, config, &mut findings, solver);
     sort_findings(findings)
 }
 
@@ -20,6 +23,7 @@ pub(super) fn collect_findings_within(
     assertions: &[&ConfigAssertion],
     config: &ConflicConfig,
     findings: &mut HashMap<FindingDedupKey, Finding>,
+    solver: Option<&dyn Solver>,
 ) {
     let buckets = build_value_buckets(assertions);
     for index in 0..buckets.len() {
@@ -29,6 +33,7 @@ pub(super) fn collect_findings_within(
                 &buckets[right_index],
                 config,
                 findings,
+                solver,
             );
         }
     }
@@ -39,13 +44,14 @@ pub(super) fn collect_findings_across(
     right_assertions: &[&ConfigAssertion],
     config: &ConflicConfig,
     findings: &mut HashMap<FindingDedupKey, Finding>,
+    solver: Option<&dyn Solver>,
 ) {
     let left_buckets = build_value_buckets(left_assertions);
     let right_buckets = build_value_buckets(right_assertions);
 
     for left in &left_buckets {
         for right in &right_buckets {
-            collect_findings_for_bucket_pair(left, right, config, findings);
+            collect_findings_for_bucket_pair(left, right, config, findings, solver);
         }
     }
 }
@@ -66,14 +72,23 @@ fn collect_findings_for_bucket_pair(
     right_bucket: &ValueBucket<'_>,
     config: &ConflicConfig,
     findings: &mut HashMap<FindingDedupKey, Finding>,
+    solver: Option<&dyn Solver>,
 ) {
-    let Compatibility::Incompatible(explanation) =
-        compare_values(&left_bucket.sample.value, &right_bucket.sample.value)
-    else {
-        return;
+    let (compatibility, rule_id) = if let Some(solver) = solver {
+        let compat = solver.compatible(
+            &left_bucket.sample.raw_value,
+            &right_bucket.sample.raw_value,
+        );
+        (compat, solver.rule_id().to_string())
+    } else {
+        let compat = compare_values(&left_bucket.sample.value, &right_bucket.sample.value);
+        let rid = registry::rule_id_for_type(&left_bucket.sample.value);
+        (compat, rid)
     };
 
-    let rule_id = rule_id_for_type(&left_bucket.sample.value);
+    let Compatibility::Incompatible(explanation) = compatibility else {
+        return;
+    };
 
     for left in &left_bucket.representatives {
         for right in &right_bucket.representatives {
@@ -113,31 +128,7 @@ fn collect_findings_for_bucket_pair(
 }
 
 fn compare_values(left: &SemanticType, right: &SemanticType) -> Compatibility {
-    match (left, right) {
-        (SemanticType::Version(left), SemanticType::Version(right)) => {
-            version::versions_compatible(left, right)
-        }
-        (SemanticType::Port(left), SemanticType::Port(right)) => {
-            port::ports_compatible(left, right)
-        }
-        (SemanticType::Boolean(left), SemanticType::Boolean(right)) => {
-            boolean::booleans_compatible(*left, *right)
-        }
-        (SemanticType::StringValue(left), SemanticType::StringValue(right)) => {
-            string::strings_compatible(left, right)
-        }
-        _ => Compatibility::Unknown,
-    }
-}
-
-fn rule_id_for_type(value: &SemanticType) -> String {
-    match value {
-        SemanticType::Version(_) => "VER001".into(),
-        SemanticType::Port(_) => "PORT001".into(),
-        SemanticType::Boolean(_) => "BOOL001".into(),
-        SemanticType::StringValue(_) => "STR001".into(),
-        _ => "MISC001".into(),
-    }
+    registry::compare_values_default(left, right)
 }
 
 #[derive(Debug)]

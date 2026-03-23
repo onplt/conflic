@@ -35,6 +35,21 @@ pub(crate) fn normalize_if_within_root(root: &Path, path: &Path) -> Option<PathB
         .then_some(normalized_path)
 }
 
+/// Make a path user-friendly for display: strip the Windows extended-length
+/// prefix and attempt to make it relative to the current working directory.
+pub(crate) fn simplify_path(path: &Path) -> String {
+    let sanitized = strip_windows_extended_length_prefix(path);
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let sanitized_cwd = strip_windows_extended_length_prefix(&cwd);
+        if let Ok(rel) = sanitized.strip_prefix(&sanitized_cwd) {
+            return rel.to_string_lossy().to_string();
+        }
+    }
+
+    sanitized.to_string_lossy().to_string()
+}
+
 pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy();
 

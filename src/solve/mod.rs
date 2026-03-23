@@ -1,6 +1,8 @@
 pub mod boolean;
 pub mod port;
+pub mod registry;
 pub mod severity;
+pub mod solver_trait;
 pub mod string;
 pub mod version;
 
@@ -14,11 +16,23 @@ use std::path::Path;
 use crate::config::ConflicConfig;
 use crate::model::*;
 
+pub use registry::SolverRegistry;
+
 /// Compare all assertions grouped by concept and produce findings.
 pub fn compare_assertions(
     scan_root: &Path,
     assertions: Vec<ConfigAssertion>,
     config: &ConflicConfig,
+) -> Vec<ConceptResult> {
+    compare_assertions_with_solvers(scan_root, assertions, config, &SolverRegistry::new())
+}
+
+/// Compare all assertions with a custom solver registry.
+pub fn compare_assertions_with_solvers(
+    scan_root: &Path,
+    assertions: Vec<ConfigAssertion>,
+    config: &ConflicConfig,
+    solvers: &SolverRegistry,
 ) -> Vec<ConceptResult> {
     let mut groups: HashMap<String, Vec<ConfigAssertion>> = HashMap::new();
     for assertion in assertions {
@@ -59,10 +73,11 @@ pub fn compare_assertions(
             continue;
         }
 
+        let concept_solver = solvers.get(&concept_id);
         let findings = if use_monorepo && !config.monorepo.global_concepts.contains(&concept_id) {
-            monorepo::find_monorepo_contradictions(scan_root, &group, config)
+            monorepo::find_monorepo_contradictions(scan_root, &group, config, concept_solver)
         } else {
-            findings::find_contradictions(&group, config)
+            findings::find_contradictions(&group, config, concept_solver)
         };
 
         results.push(ConceptResult {
@@ -291,6 +306,54 @@ mod tests {
         assert!(
             test_results.findings.is_empty(),
             "nested package roots should win over broader matches"
+        );
+    }
+
+    #[test]
+    fn test_custom_solver_overrides_default_comparison() {
+        // Values "20.0.0" and ">=18" are StringValue (not parsed as versions here).
+        // With default string comparison, they differ. With a semver solver, they're compatible.
+        let assertions = vec![
+            make_assertion("a.json", "20.0.0", Authority::Declared),
+            make_assertion("b.json", ">=18", Authority::Declared),
+        ];
+
+        // Without solver: string comparison → incompatible
+        let config = ConflicConfig::default();
+        let results = compare_assertions(Path::new("."), assertions.clone(), &config);
+        assert!(
+            !results[0].findings.is_empty(),
+            "String comparison should find contradiction"
+        );
+
+        // With semver solver: version comparison → compatible
+        let mut solvers = SolverRegistry::new();
+        solvers.register("test".into(), Box::new(registry::SemverSolver));
+        let results =
+            compare_assertions_with_solvers(Path::new("."), assertions, &config, &solvers);
+        assert!(
+            results[0].findings.is_empty(),
+            "Semver solver should find these compatible"
+        );
+    }
+
+    #[test]
+    fn test_custom_solver_uses_solver_rule_id() {
+        let assertions = vec![
+            make_assertion("a.json", "8080", Authority::Declared),
+            make_assertion("b.json", "3000", Authority::Declared),
+        ];
+
+        let mut solvers = SolverRegistry::new();
+        solvers.register("test".into(), Box::new(registry::PortSolver));
+        let config = ConflicConfig::default();
+        let results =
+            compare_assertions_with_solvers(Path::new("."), assertions, &config, &solvers);
+
+        assert_eq!(results[0].findings.len(), 1);
+        assert_eq!(
+            results[0].findings[0].rule_id, "PORT001",
+            "Should use the solver's rule_id"
         );
     }
 }

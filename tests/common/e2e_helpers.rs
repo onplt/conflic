@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[cfg(feature = "lsp")]
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;

@@ -1,0 +1,23 @@
+# SARIF upload — inline annotations in PR via GitHub Code Scanning
+name: Config Check (SARIF)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  security-events: write   # required for SARIF upload
+
+jobs:
+  conflic:
+    name: Configuration consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: onplt/conflic@v1
+        with:
+          severity: info
+          fail-on: none       # annotate but don't block
+          sarif-upload: true   # uploads to GitHub Code Scanning

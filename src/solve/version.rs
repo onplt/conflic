@@ -2,6 +2,10 @@ use super::Compatibility;
 use crate::model::VersionSpec;
 
 /// Convert a semver::Version to a node_semver::Version for range checks.
+pub(crate) fn to_node_version_pub(v: &semver::Version) -> node_semver::Version {
+    to_node_version(v)
+}
+
 fn to_node_version(v: &semver::Version) -> node_semver::Version {
     node_semver::Version {
         major: v.major,

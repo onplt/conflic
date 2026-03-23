@@ -1,10 +1,10 @@
-use crate::common::e2e_helpers::*;
+#![cfg(feature = "lsp")]
+
 use crate::common::TestWorkspace;
+use crate::common::e2e_helpers::*;
 use std::process::{Command as ProcessCommand, Stdio};
-#[cfg(feature = "lsp")]
 use tower_lsp::lsp_types::Url;
 
-#[cfg(feature = "lsp")]
 #[test]
 fn test_cli_lsp_uses_unsaved_buffer_diagnostics_and_targeted_code_actions() {
     let workspace = TestWorkspace::new();

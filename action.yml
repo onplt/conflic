@@ -63,16 +63,18 @@ runs:
   steps:
     - name: Install conflic
       shell: bash
-      run: ${{ github.action_path }}/scripts/install-conflic.sh
+      run: bash "$ACTION_PATH/scripts/install-conflic.sh"
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CONFLIC_VERSION: ${{ inputs.version }}
         GITHUB_TOKEN: ${{ github.token }}
 
     - name: Run conflic
       id: run
       shell: bash
-      run: ${{ github.action_path }}/scripts/run-conflic.sh
+      run: bash "$ACTION_PATH/scripts/run-conflic.sh"
       env:
+        ACTION_PATH: ${{ github.action_path }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_SEVERITY: ${{ inputs.severity }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}

@@ -13,6 +13,10 @@ pub struct ConflicConfig {
     pub monorepo: MonorepoSettings,
     #[serde(default)]
     pub custom_extractor: Vec<CustomExtractorConfig>,
+    #[serde(default)]
+    pub policy: Vec<PolicyConfig>,
+    #[serde(default)]
+    pub concept_rule: Vec<ConceptRuleConfig>,
     #[serde(skip)]
     compiled_custom_extractors: Vec<crate::extract::custom::CustomExtractor>,
     #[serde(skip)]
@@ -34,6 +38,11 @@ pub struct CustomExtractorConfig {
     pub category: String,
     #[serde(default = "default_value_type", rename = "type")]
     pub value_type: String,
+    /// Optional solver strategy override. When set, this solver is used to
+    /// compare values for this concept instead of the default type-based dispatch.
+    /// Built-in solvers: "semver", "port", "boolean", "exact-string".
+    #[serde(default)]
+    pub solver: Option<String>,
     pub source: Vec<CustomSourceConfig>,
 }
 
@@ -92,6 +101,67 @@ pub struct MonorepoSettings {
     pub package_roots: Vec<String>,
     #[serde(default)]
     pub global_concepts: Vec<String>,
+}
+
+/// Configuration for a policy rule — organizational constraints on config values.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PolicyConfig {
+    /// Unique identifier for this policy (e.g. "POL001").
+    pub id: String,
+    /// Concept this policy applies to (e.g. "node-version", "app-port").
+    pub concept: String,
+    /// The constraint rule. For versions: a semver range like ">= 20".
+    /// For ports: a port spec like "!= 80". For booleans: "true" or "false".
+    /// For strings: a comma-separated list prefixed with "!=" for blacklist.
+    pub rule: String,
+    /// Severity: "error", "warning", or "info".
+    #[serde(default = "default_policy_severity")]
+    pub severity: String,
+    /// Human-readable message explaining the policy.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Configuration for a cross-concept dependency rule.
+///
+/// When a concept's assertion matches the `when` condition, asserts that
+/// another concept must satisfy the `then` constraint.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConceptRuleConfig {
+    /// Unique identifier for this rule (e.g. "XCON001").
+    pub id: String,
+    /// The triggering condition.
+    pub when: ConceptRuleWhen,
+    /// The required constraint on a related concept.
+    pub then: ConceptRuleThen,
+    /// Severity: "error", "warning", or "info".
+    #[serde(default = "default_policy_severity")]
+    pub severity: String,
+    /// Human-readable message explaining the relationship.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// The "when" side of a cross-concept rule: which concept and value triggers it.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConceptRuleWhen {
+    /// Concept ID or alias (e.g. "python-version", "python").
+    pub concept: String,
+    /// Semver range, value, or pattern that the assertion must match (e.g. ">=3.12").
+    pub matches: String,
+}
+
+/// The "then" side of a cross-concept rule: what must be true about a related concept.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ConceptRuleThen {
+    /// Concept ID or alias (e.g. "pip-version", "node-version").
+    pub concept: String,
+    /// Constraint the related concept's assertions must satisfy (e.g. ">=22.3").
+    pub requires: String,
+}
+
+fn default_policy_severity() -> String {
+    "error".into()
 }
 
 fn default_severity() -> String {
@@ -346,12 +416,40 @@ skip_concepts = []
 # package_roots = ["packages/*", "apps/*"]
 # global_concepts = ["node-version", "ts-strict-mode"]
 
+# Policy rules - enforce organizational constraints
+# [[policy]]
+# id = "POL001"
+# concept = "node-version"
+# rule = ">= 20"
+# severity = "error"
+# message = "Node.js 18 reaches EOL April 2025. All services must use Node >= 20."
+
+# [[policy]]
+# id = "POL002"
+# concept = "app-port"
+# rule = ">= 1024"
+# severity = "warning"
+# message = "Ports below 1024 require root privileges."
+
+# Cross-concept dependency rules
+# [[concept_rule]]
+# id = "XCON001"
+# severity = "warning"
+# message = "Python 3.12+ requires pip 22.3+"
+# [concept_rule.when]
+# concept = "python-version"
+# matches = ">= 3.12"
+# [concept_rule.then]
+# concept = "pip-version"
+# requires = ">= 22.3"
+
 # Custom extractors - define your own concepts without writing Rust
 # [[custom_extractor]]
 # concept = "redis-version"
 # display_name = "Redis Version"
 # category = "runtime-version"
 # type = "version"
+# solver = "semver"  # optional: "semver", "port", "boolean", "exact-string"
 #
 # [[custom_extractor.source]]
 # file = "docker-compose.yml"

@@ -1,0 +1,19 @@
+# Simple CI gate — block PRs that introduce configuration contradictions
+name: Config Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  conflic:
+    name: Configuration consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: onplt/conflic@v1
+        with:
+          severity: warning   # report warnings and errors
+          fail-on: error      # only block on errors

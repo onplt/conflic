@@ -15,87 +15,27 @@
 
 ---
 
-`conflic` scans a directory tree, extracts semantic assertions from configuration files, and reports contradictions between them.
+Your `.nvmrc` says Node 20. Your `Dockerfile` pulls `node:18-alpine`. Your CI matrix tests against Node 22. Which one is right?
 
-The current implementation ships with:
+**conflic** finds these contradictions for you. It scans your project, extracts version pins, port declarations, and other configuration values from across file formats, then tells you where they disagree.
 
-- 29 built-in extractors across 8 built-in concepts
-- custom extractors loaded from `.conflic.toml`
-- terminal, JSON, and SARIF output
-- diff-scoped scans
-- baselines for suppressing known findings
-- fix planning and safe auto-fix for supported targets
-- an optional LSP server with incremental rescans and quick-fix code actions
+## Features
 
-## What `conflic` understands today
-
-Recognized CI runtime settings come from YAML files under:
-
-- `.github/workflows`
-- `.circleci`
-- `.gitlab-ci`
-- the repository root file `.gitlab-ci.yml`
-
-Built-in concepts and their current sources:
-
-| Concept ID | Display name | Current sources |
-| --- | --- | --- |
-| `node-version` | Node.js Version | `.nvmrc`, `.node-version`, `package.json` `engines.node`, `Dockerfile*` `FROM node:*`, recognized CI YAML `node-version` / `node_version`, `.tool-versions` entries for `nodejs` or `node` |
-| `python-version` | Python Version | `.python-version`, `pyproject.toml` `project.requires-python`, `pyproject.toml` `tool.poetry.dependencies.python`, `Dockerfile*` `FROM python:*`, recognized CI YAML `python-version` / `python_version` |
-| `go-version` | Go Version | `go.mod` `go` directive, `Dockerfile*` `FROM golang:*` |
-| `java-version` | Java Version | `pom.xml` tags `maven.compiler.source`, `maven.compiler.target`, `java.version`, or `release`, `Dockerfile*` `FROM openjdk:*`, `eclipse-temurin:*`, `amazoncorretto:*`, or `ibm-semeru-runtimes:*`, `.sdkmanrc` `java=...`, `.tool-versions` `java`, recognized CI YAML `java-version` / `java_version` |
-| `ruby-version` | Ruby Version | `.ruby-version`, `Gemfile` `ruby "..."`, `Dockerfile*` `FROM ruby:*`, `.tool-versions` `ruby`, recognized CI YAML `ruby-version` / `ruby_version` |
-| `dotnet-version` | .NET Version | `*.csproj` `TargetFramework` and `TargetFrameworks`, `global.json` `sdk.version`, `Dockerfile*` `FROM mcr.microsoft.com/dotnet/{sdk,aspnet,runtime}:...` |
-| `app-port` | Application Port | `.env` and `.env.*` keys `PORT`, `APP_PORT`, or `SERVER_PORT`, `docker-compose*.yml` / `docker-compose*.yaml` service ports, `Dockerfile*` `EXPOSE` |
-| `ts-strict-mode` | TypeScript Strict Mode | `tsconfig*.json` `compilerOptions.strict`, plus ESLint configs that explicitly turn off `@typescript-eslint/strict-boolean-expressions`, `@typescript-eslint/strict-type-checked`, or `@typescript-eslint/no-explicit-any` |
-
-Important details behind those sources:
-
-- `Dockerfile*` means `Dockerfile` plus filename variants such as `Dockerfile.dev`.
-- `.env*` means `.env` plus variants such as `.env.local`.
-- `docker-compose*.yml` / `.yaml` includes variants such as `docker-compose.override.yaml`.
-- `tsconfig*.json` includes files like `tsconfig.app.json`.
-- ESLint files currently recognized are `.eslintrc`, `.eslintrc.json`, `.eslintrc.yml`, `.eslintrc.yaml`, and any file named `eslint.config.*`.
-
-## How contradictions are evaluated
-
-`conflic` compares extracted values using concept-aware semantics:
-
-- Versions understand exact semver values, partial versions like `20` or `3.12`, npm-style ranges like `^20` or `>=18 <20`, and Docker tags like `22-alpine`.
-- Ports understand single ports, ranges like `3000-3005`, and Docker-style mappings like `3000:8080`. For mappings, the container port is treated as the application port.
-- Boolean concepts compare literal `true` / `false`.
-- String concepts compare exact string equality.
-- Custom extractors can opt into `version`, `port`, `boolean`, or plain string semantics.
-
-Each assertion also carries an authority level:
-
-- `advisory`: informational sources such as `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.tool-versions`, `.sdkmanrc`, and non-final Docker build stages
-- `declared`: project declarations such as `package.json`, `pyproject.toml`, `Gemfile`, `go.mod`, `.env`, `pom.xml`, `*.csproj`, and `Dockerfile EXPOSE`
-- `enforced`: hard constraints such as final Docker runtime images, CI runtime settings, `docker-compose` ports, `global.json`, `tsconfig` strict mode, and ESLint strict-related rules that are turned off
-
-Current severity mapping:
-
-| Authority pair | Result |
-| --- | --- |
-| `enforced` + `enforced` | `error` |
-| `enforced` + `declared` | `error` |
-| `enforced` + `advisory` | `warning` |
-| `declared` + `declared` | `warning` |
-| `declared` + `advisory` | `info` |
-| `advisory` + `advisory` | `info` |
-
-Important current behavior:
-
-- `--severity` and `[conflic].severity` affect exit codes and `--quiet`.
-- They do not currently filter lower-severity findings out of terminal, JSON, or SARIF output.
+- **35 built-in extractors** covering Node.js, Python, Go, Java, Ruby, .NET versions, application ports, and TypeScript strict mode
+- **IaC drift detection** for Terraform, Kubernetes, and Helm files
+- **Custom extractors** defined in `.conflic.toml` for any concept you need to track
+- **Policy rules** that enforce organizational constraints (e.g., "all services must use Node >= 20")
+- **Cross-concept rules** that detect dependency violations (e.g., "Python 3.12 requires pip >= 22.3")
+- **Diff-scoped scans** that focus on what changed since a git ref
+- **Scan history and trends** to track configuration integrity over time
+- **Multi-repo federation** to detect cross-repository drift across a fleet
+- **Auto-fix** for supported file types, with previews and backups
+- **LSP server** with live diagnostics, hover info, go-to-peer references, and quick-fix code actions
+- **Multiple output formats**: terminal, JSON, and SARIF
 
 ## Installation
 
-Requirements:
-
-- Rust 1.94 or newer
-
-From crates.io:
+Requires Rust 1.94+.
 
 ```bash
 cargo install conflic
@@ -118,187 +58,115 @@ cargo install conflic --no-default-features
 ## Quick start
 
 ```bash
-# Scan the current directory
-conflic
-
-# Scan a specific path
-conflic path/to/workspace
-
-# Create a starter config in that path
-conflic path/to/workspace --init
-
-# List built-in extractor IDs and descriptions
-conflic --list-concepts
-
-# Keep only selected concepts in the normal scan output
-conflic --check node,python
-
-# Emit machine-readable JSON
-conflic --format json
-
-# Emit SARIF
-conflic --format sarif > conflic.sarif
-
-# Show discovery, extractor, assertion, and comparison details
-conflic --doctor
-
-# Scope the scan to changes since a git ref
-conflic --diff origin/main
-
-# Or pass changed paths on stdin, one path per line
-git diff --name-only origin/main | conflic --diff-stdin
-
-# Create or update a baseline
-conflic --update-baseline .conflic-baseline.json
-
-# Suppress findings already present in that baseline
-conflic --baseline .conflic-baseline.json
-
-# Preview fix proposals without writing anything
-conflic --fix --dry-run
+conflic                                      # scan current directory
+conflic path/to/workspace                    # scan a specific path
+conflic --format json                        # machine-readable output
+conflic --format sarif > conflic.sarif       # SARIF for CI integrations
+conflic --diff origin/main                   # only check what changed
+conflic --since origin/main                  # only findings introduced since ref
+conflic --fix --dry-run                      # preview auto-fix proposals
+conflic --record                             # scan and save to history
+conflic --trend                              # show trend report
+conflic --federate federation.toml           # scan multiple repos
+conflic --init                               # create a starter .conflic.toml
 ```
 
-## Discovery and parsing
+## What conflic knows about
 
-Current implementation details that matter in practice:
+### Built-in concepts
 
-- Discovery respects `.gitignore`, `.git/info/exclude`, and global Git ignore files.
-- The walker always skips these directories: `node_modules`, `.git`, `vendor`, `target`, `dist`, `build`, `__pycache__`, `.tox`, `.venv`, and `venv`.
-- `[conflic].exclude` can add extra exclusions as simple path segments, exact path prefixes, or glob patterns.
-- JSON files are parsed as strict JSON first, then JSON5 as a fallback. This means comments, trailing commas, single-quoted strings, and unquoted keys are accepted when the JSON5 parser can handle them.
-- Extensionless `.eslintrc` files are tried as JSON/JSON5 first, then YAML.
-- YAML parsing supports anchors and merge keys.
-- `tsconfig*.json` and structured ESLint configs resolve local `extends` chains with cycle detection.
-- Local `extends` targets are blocked if they resolve outside the scan root. Those cases are surfaced as `PARSE002`.
-- Missing local config references such as `tsconfig.base` also surface as `PARSE002`.
-- `eslint.config.*` files are parsed, not executed. Current support is for exported object/array literals that are JSON5-like, optionally wrapped in `defineConfig(...)`, `tseslint.config(...)`, `typescriptEslint.config(...)`, or `eslint.config(...)`.
-- Parse and configuration diagnostics are preserved in terminal output, JSON output, SARIF output, baselines, and LSP diagnostics.
+| Concept | Sources |
+| --- | --- |
+| **Node.js Version** | `.nvmrc`, `.node-version`, `package.json` engines, Dockerfiles, CI workflows, `.tool-versions`, Kubernetes manifests, Helm values, Terraform |
+| **Python Version** | `.python-version`, `pyproject.toml`, Dockerfiles, CI workflows, Kubernetes manifests, Helm values, Terraform |
+| **Go Version** | `go.mod`, Dockerfiles, Kubernetes manifests, Helm values, Terraform |
+| **Java Version** | `pom.xml`, Dockerfiles (OpenJDK, Temurin, Corretto, Semeru), `.sdkmanrc`, `.tool-versions`, CI workflows, Kubernetes manifests, Helm values, Terraform |
+| **Ruby Version** | `.ruby-version`, `Gemfile`, Dockerfiles, `.tool-versions`, CI workflows, Kubernetes manifests, Helm values, Terraform |
+| **.NET Version** | `*.csproj`, `global.json`, Dockerfiles, Kubernetes manifests, Helm values, Terraform |
+| **Application Port** | `.env` / `.env.*`, `docker-compose*.yml`, Dockerfile `EXPOSE`, Kubernetes manifests, Helm values, Terraform |
+| **TypeScript Strict Mode** | `tsconfig*.json`, ESLint configs (legacy and flat) |
+
+CI workflows are recognized from `.github/workflows/*.yml`, `.circleci/config.yml`, `.gitlab-ci.yml`, and `.gitlab-ci/*.yml`.
+
+Dockerfiles include variants like `Dockerfile.dev`. ESLint configs include `.eslintrc`, `.eslintrc.json`, `.eslintrc.yml`, and `eslint.config.*` files.
+
+### Infrastructure-as-Code (IaC) sources
+
+conflic extracts versions and ports from IaC files, enabling drift detection between application configs and infrastructure definitions:
+
+- **Terraform** (`*.tf`): Lambda/Cloud Functions `runtime` values (`nodejs20.x`, `python3.12`, `java21`, etc.), container `image` tags, `container_port` and `host_port` assignments
+- **Kubernetes** (`deployment.yaml`, `service.yaml`, `statefulset.yaml`, `pod.yaml`, `job.yaml`, `cronjob.yaml`): container `image` tags, `containerPort`, Service `targetPort`
+- **Helm** (`values.yaml`, `values.yml`): `image.repository` + `image.tag` patterns (including nested multi-service charts), `port`, `containerPort`, `targetPort`, `servicePort` keys
+
+IaC assertions use appropriate authority levels: Terraform resource attributes and Kubernetes container images are `enforced`, Helm values are `declared`.
+
+### How values are compared
+
+conflic doesn't just do string comparison. It understands the semantics of each value type:
+
+- **Versions**: exact values (`20.0.0`), partials (`20`), ranges (`^20`, `>=18 <20`), and Docker tags (`22-alpine`) are compared using semver-aware logic
+- **Ports**: single ports, ranges (`3000-3005`), and Docker mappings (`3000:8080`) are compared by their container port
+- **Booleans**: literal `true` / `false`
+- **Strings**: exact equality
+
+### Authority levels
+
+Each assertion carries an authority level that determines the severity of contradictions:
+
+| Level | Meaning | Examples |
+| --- | --- | --- |
+| **enforced** | Hard constraint; build breaks if wrong | Final Dockerfile `FROM`, CI runtime versions, docker-compose ports |
+| **declared** | Should match, but not mechanically enforced | `package.json` engines, `pyproject.toml`, `.env`, `pom.xml` |
+| **advisory** | Informational; nice to keep in sync | `.nvmrc`, `.python-version`, `.tool-versions`, non-final Docker stages |
+
+When two assertions conflict, severity depends on the authority pair:
+
+| Pair | Severity |
+| --- | --- |
+| enforced + enforced | error |
+| enforced + declared | error |
+| enforced + advisory | warning |
+| declared + declared | warning |
+| declared + advisory | info |
+| advisory + advisory | info |
 
 ## Configuration
 
-By default `conflic` looks for `.conflic.toml` in the scan root.
-
-- `conflic --init [PATH]` writes a starter file to `PATH/.conflic.toml`
-- `--config` overrides the config file path
-- relative `--config` paths are resolved from the scan root, not from the shell working directory
-- a missing implicit config is fine
-- a missing explicit `--config` path is an error
-
-Example:
+conflic looks for `.conflic.toml` in the scan root. Run `conflic --init` to generate a starter config.
 
 ```toml
 [conflic]
-severity = "warning"
-format = "terminal"
-exclude = []
-skip_concepts = []
+severity = "warning"       # minimum severity: "error", "warning", or "info"
+format = "terminal"        # output: "terminal", "json", or "sarif"
+exclude = []               # extra directories or glob patterns to skip
+skip_concepts = []         # concepts to ignore entirely
 
-# [[ignore]]
-# rule = "VER001"
-# files = ["Dockerfile", ".nvmrc"]
-# reason = "Intentional drift"
+# Suppress a specific contradiction
+[[ignore]]
+rule = "VER001"
+files = ["Dockerfile", ".nvmrc"]
+reason = "Multi-stage build; final stage matches"
 
-# [monorepo]
-# per_package = true
-# package_roots = ["packages/*", "apps/*"]
-# global_concepts = ["node-version", "ts-strict-mode"]
+# Monorepo support
+[monorepo]
+per_package = true
+package_roots = ["packages/*", "apps/*"]
+global_concepts = ["node-version", "ts-strict-mode"]
 
-# [[custom_extractor]]
-# concept = "redis-version"
-# display_name = "Redis Version"
-# category = "runtime-version"
-# type = "version"
-#
-# [[custom_extractor.source]]
-# file = "docker-compose.yml"
-# format = "yaml"
-# path = "services.redis.image"
-# pattern = "redis:(.*)"
-# authority = "enforced"
-#
-# [[custom_extractor.source]]
-# file = ".env"
-# format = "env"
-# key = "REDIS_VERSION"
-# authority = "declared"
+# Organizational policies
+[[policy]]
+id = "POL001"
+concept = "node-version"
+rule = ">= 20"
+severity = "error"
+message = "Node 18 is EOL. All services must use Node 20+."
 ```
 
-Config fields:
+You can use short aliases like `node`, `python`, `port` in `--check`, `skip_concepts`, and `--concept` flags.
 
-- `[conflic].severity`: `error`, `warning`, or `info`
-- `[conflic].format`: `terminal`, `json`, or `sarif`
-- `[conflic].exclude`: extra names, path prefixes, or glob patterns to skip during discovery
-- `[conflic].skip_concepts`: concepts to drop before reporting; full IDs and built-in aliases are accepted
-- `[[ignore]]`: contradiction-only suppression rules
-- `[monorepo]`: package scoping controls
-- `[[custom_extractor]]`: custom concept definitions
+### Custom extractors
 
-Built-in selector aliases accepted by:
-
-- `--check`
-- `[conflic].skip_concepts`
-- `--concept` in fix mode
-
-| Alias | Concept ID |
-| --- | --- |
-| `node` | `node-version` |
-| `python` | `python-version` |
-| `go` | `go-version` |
-| `java` | `java-version` |
-| `ruby` | `ruby-version` |
-| `dotnet` | `dotnet-version` |
-| `port` | `app-port` |
-| `ts-strict` | `ts-strict-mode` |
-
-Ignore rules behave like this:
-
-- `file = "Dockerfile"` suppresses any finding where either side ends with `Dockerfile`
-- `files = ["Dockerfile", ".nvmrc"]` suppresses only findings where both sides match one of those suffixes
-- `rule = "VER001"` narrows the ignore to one rule ID
-- `reason` is stored in config for humans but is not used by the engine
-
-Monorepo settings:
-
-- When `[monorepo].per_package = true` and `package_roots` is non-empty, contradictions are checked within each matched package instead of across the whole repository.
-- Root-level files are still compared against each other and against package-local files.
-- If multiple package root patterns match, the most specific match wins.
-- `[monorepo].global_concepts` bypasses package scoping and compares those concepts repo-wide.
-- `global_concepts` currently expects full concept IDs, not aliases.
-
-## Custom extractors
-
-Custom extractors are compiled from `.conflic.toml` at startup and merged with the built-in extractor set.
-
-Supported extractor-level fields:
-
-- `concept`: unique concept ID
-- `display_name`: human-readable concept name
-- `category`: known values `runtime-version`, `port`, `strict-mode`, `build-tool`, `package-manager`; anything else is kept as a custom category string
-- `type`: `version`, `port`, `boolean`, or `string`; unknown values currently behave like `string`
-
-Supported per-source fields:
-
-- `file`: exact filename, exact path, or glob pattern
-- `format`: `json`, `yaml`, `toml`, `env`, `plain`, or `dockerfile`
-- `authority`: use `enforced`, `declared`, or `advisory`; unknown values currently fall back to `advisory`
-- `pattern`: optional regex; if capture group 1 exists, that capture becomes the extracted value, otherwise the full match is used
-- `path`: dot-separated lookup used by `json`, `yaml`, and `toml` sources
-- `key`: exact key used by `env` sources
-
-Format-specific behavior:
-
-- `json`, `yaml`, and `toml` sources read a single value at `path`
-- `env` sources read the first matching `key`
-- `plain` sources operate on the whole trimmed file
-- `dockerfile` sources test each `FROM` instruction's argument string and use the first match
-
-Current validation behavior:
-
-- invalid source formats, invalid file globs, invalid path globs, invalid relative globs, and invalid regex patterns are surfaced as `CONFIG001`
-- if every source in a custom extractor is invalid, that extractor is skipped and a `CONFIG001` diagnostic is emitted
-- missing format-specific fields such as `path` or `key` are not validated eagerly; those sources will simply produce no assertions
-
-Example:
+Track any configuration value by defining custom extractors:
 
 ```toml
 [[custom_extractor]]
@@ -306,6 +174,7 @@ concept = "redis-version"
 display_name = "Redis Version"
 category = "runtime-version"
 type = "version"
+solver = "semver"           # optional: "semver", "port", "boolean", "exact-string"
 
 [[custom_extractor.source]]
 file = "docker-compose.yml"
@@ -321,139 +190,155 @@ key = "REDIS_VERSION"
 authority = "declared"
 ```
 
+Supported source formats: `json`, `yaml`, `toml`, `env`, `plain`, `dockerfile`.
+
+### Policy rules
+
+Policies enforce organizational constraints independent of inter-file contradictions:
+
+```toml
+[[policy]]
+id = "POL002"
+concept = "app-port"
+rule = "!= 80, != 443"
+severity = "warning"
+message = "Privileged ports require root."
+
+[[policy]]
+id = "POL003"
+concept = "python-version"
+rule = "!= 3.8, != 3.9"
+severity = "error"
+message = "Python 3.8 and 3.9 are EOL."
+```
+
+Version policies use semver ranges (`>= 20`). Port policies use port specs (`!= 80`). String policies use comma-separated blacklists (`!= value1, != value2`).
+
+### Cross-concept rules
+
+Define dependency relationships between concepts. When one concept matches a condition, another concept must satisfy a constraint:
+
+```toml
+[[concept_rule]]
+id = "RULE001"
+severity = "warning"
+message = "Python 3.12+ requires pip >= 22.3"
+
+[concept_rule.when]
+concept = "python-version"
+matches = ">= 3.12"
+
+[concept_rule.then]
+concept = "pip-version"
+requires = ">= 22.3"
+```
+
+Cross-concept rules are evaluated after per-concept contradiction detection and policy evaluation. The `when.matches` field supports semver ranges and exact values. The `then.requires` field uses the same format. Findings from concept rules appear as additional entries in the scan results.
+
+## Scan history and trends
+
+Track configuration integrity over time with scan history:
+
+```bash
+conflic --record                    # scan and record results in .conflic-history.json
+conflic --trend                     # show trend report from recorded history
+conflic --since v1.0.0              # only show findings introduced since a git ref
+```
+
+`--record` appends a snapshot (commit SHA, author, timestamp, finding counts) to `.conflic-history.json` in the scan root. This file should typically be gitignored.
+
+`--trend` shows a table of historical snapshots with error/warning/info counts, plus lists of new and resolved findings between the last two scans.
+
+`--since <REF>` uses `git blame` to determine when each finding was introduced and filters out findings that predate the given ref. This is useful in CI to answer "did this PR make things worse?"
+
+## Multi-repository federation
+
+Scan multiple repositories and detect cross-repo drift:
+
+```bash
+conflic --init-federation           # create a template conflic-federation.toml
+conflic --federate conflic-federation.toml   # run federated scan
+conflic --federate conflic-federation.toml --format json  # JSON output
+```
+
+Federation config (`conflic-federation.toml`):
+
+```toml
+[[repository]]
+name = "api-gateway"
+path = "../api-gateway"
+group = "backend"
+
+[[repository]]
+name = "user-service"
+path = "../user-service"
+group = "backend"
+
+[[repository]]
+name = "web-app"
+path = "../web-app"
+group = "frontend"
+```
+
+Each repository is scanned independently using its own `.conflic.toml` (if present). Repositories in the same `group` are compared for cross-repo drift: if the same concept has different values across repos in a group, it's reported as drift. The federation report shows per-repo finding counts and cross-repo drift entries.
+
+The exit code is `1` if any repository has errors or if cross-repo drift is detected.
+
 ## Diff scans and baselines
 
 ### Diff scans
 
-`--diff <REF>` does more than scan changed files in isolation:
+`--diff <REF>` scans files changed since a git ref, plus any peer files needed to evaluate impacted concepts. This keeps CI fast while still catching cross-file contradictions.
 
-- it uses `git diff --name-only <REF> --`
-- it also includes untracked files from `git ls-files --others --exclude-standard`
-- it scans those changed files first
-- it then pulls in peer files for any impacted concepts so comparisons remain meaningful
-
-`--diff-stdin` uses the same peer-file expansion, but the changed path list comes from stdin instead of Git.
-
-Current diff-mode behavior:
-
-- parse diagnostics from untouched peer files are not carried into the diff result
-- paths outside the scan root are ignored
+```bash
+conflic --diff origin/main
+git diff --name-only origin/main | conflic --diff-stdin
+```
 
 ### Baselines
 
-```bash
-# Write a baseline from the current result
-conflic --update-baseline .conflic-baseline.json
+Suppress known findings so you can adopt conflic incrementally:
 
-# Suppress already-known findings and diagnostics
-conflic --baseline .conflic-baseline.json
+```bash
+conflic --update-baseline .conflic-baseline.json   # save current state
+conflic --baseline .conflic-baseline.json          # suppress known issues
 ```
 
-Baselines fingerprint both contradictions and parse/config diagnostics using stable fields such as:
-
-- rule ID
-- concept ID
-- severity
-- scan-root-relative file path
-- key path
-- normalized value text
-
-Current baseline behavior:
-
-- `--update-baseline` writes the file and then continues with normal reporting and normal exit-code handling
-- `--baseline` suppresses matching contradictions and matching parse/config diagnostics
-- if the `--baseline` file does not exist, it is silently ignored
-- if `--baseline` and `--update-baseline` point to the same file, `conflic` exits with an error to avoid suppressing the freshly generated result
+Baselines track findings by rule ID, concept, severity, file path, and value, so new contradictions are still caught even if old ones are suppressed.
 
 ## Auto-fix
 
-`conflic --fix` always prints a preview first. If proposals exist and `--dry-run` is not set, it then prompts for confirmation unless `--yes` is present.
+```bash
+conflic --fix              # preview + prompt before applying
+conflic --fix --dry-run    # preview only
+conflic --fix --yes        # apply without prompting
+```
 
-Current fix winner model:
+The highest-authority assertion wins. Lower-authority files are updated to match. If the top-authority values disagree with each other, the concept is marked unfixable.
 
-- the highest-authority assertion wins
-- lower-authority contradictory assertions are proposed for update
-- if multiple top-authority assertions disagree, the concept is marked unfixable instead of picking a winner arbitrarily
+Supported fix targets include version files (`.nvmrc`, `.python-version`, `.ruby-version`), package manifests (`package.json`, `go.mod`, `Gemfile`, `pom.xml`, `*.csproj`, `global.json`), Dockerfiles (`FROM` tags and `EXPOSE`), `.tool-versions`, and `.env` port values.
 
-Currently supported fix targets:
-
-- `.nvmrc` and `.node-version`
-- `.python-version`
-- `.ruby-version`
-- `package.json` `engines.node`
-- `global.json` `sdk.version`
-- `go.mod` `go`
-- `.tool-versions` entries for Node, Java, and Ruby
-- `Gemfile` `ruby`
-- `pom.xml` Java version tags
-- `*.csproj` `TargetFramework`
-- `Dockerfile*` `FROM` image tags for Node, Python, Go, Ruby, Java, and .NET
-- `.env` and `.env.*` plain `KEY=value` port assignments
-- `Dockerfile*` `EXPOSE`
-
-Current fix limitations:
-
-- `docker-compose` ports are not auto-fixed
-- CI runtime settings are not auto-fixed
-- `tsconfig` and ESLint strict-mode assertions are not auto-fixed
-- matrix assertions are never auto-fixed
-- `.csproj` `TargetFrameworks` entries are extracted as matrix assertions and therefore are not auto-fixed
-- `.env` expressions such as `${PORT:-3000}` are compared but not rewritten automatically
-- exact-value files such as `.nvmrc` are only rewritten when the winner can be rendered safely as an exact token
-
-Operational details:
-
-- backups are written as `*.conflic.bak` unless `--no-backup` is used
-- writes are applied atomically
-- `--dry-run` exits with code `1` whenever proposals or unfixable items exist
-
-## Output formats
-
-`conflic` currently supports three output formats:
-
-- `terminal`: grouped by concept, with parse diagnostics first and concept assertions shown before findings
-- `json`: top-level `version`, `concepts`, `parse_diagnostics`, and `summary`
-- `sarif`: SARIF 2.1.0 with contradiction findings and parse/config diagnostics
-
-Terminal output notes:
-
-- by default, only concepts with findings are shown
-- `--verbose` also shows concepts whose assertions are fully consistent
-- `--quiet` suppresses output unless findings or diagnostics exist at or above the active threshold
-
-Rule IDs currently emitted:
-
-- `VER001`: version contradiction
-- `PORT001`: port contradiction
-- `BOOL001`: boolean contradiction
-- `STR001`: string contradiction
-- `PARSE001`: file read or parse failure
-- `PARSE002`: blocked or failed local `extends` resolution
-- `CONFIG001`: invalid custom extractor configuration
+Backups are written as `*.conflic.bak` unless `--no-backup` is passed. All writes are atomic.
 
 ## LSP server
-
-The default build includes an LSP server:
 
 ```bash
 conflic --lsp
 ```
 
-Current LSP capabilities:
+The LSP server provides:
 
-- diagnostics for both sides of a contradiction
-- diagnostics for parse and configuration issues
-- quick-fix code actions backed by the same fix planner used by `--fix`
-- incremental text sync
-- debounced rescans
-- targeted peer-file rescans through `IncrementalWorkspace`
-- live `.conflic.toml` reload when the config file changes on disk or in an open editor buffer
+- **Diagnostics** for contradictions and parse errors on both sides of each finding
+- **Hover** showing the concept name, authority, all peer declarations, and contradiction status
+- **Go-to-peer references** to jump between all files asserting the same concept
+- **Document symbols** listing all extracted assertions in the outline view
+- **Quick-fix code actions** using the same fix planner as `--fix`
+- **Incremental rescans** with debouncing and peer-file invalidation
+- **Live config reload** when `.conflic.toml` changes
 
-For debugging incremental behavior, setting `CONFLIC_LSP_SCAN_STATS=1` causes the server to log full-scan and incremental-scan stats through the LSP log channel.
+Set `CONFLIC_LSP_SCAN_STATS=1` to log scan statistics for debugging.
 
-## Rust library usage
-
-The crate can also be used as a library:
+## Library usage
 
 ```rust
 use conflic::config::ConflicConfig;
@@ -463,55 +348,148 @@ let config = ConflicConfig::load(root, None)?;
 let result = conflic::scan(root, &config)?;
 ```
 
-Public entry points currently re-exported from the crate root include:
+Key exports: `scan`, `scan_with_overrides`, `scan_diff`, `scan_doctor`, `git_changed_files`, `IncrementalWorkspace`.
 
-- `scan`
-- `scan_with_overrides`
-- `scan_diff`
-- `scan_doctor`
-- `git_changed_files`
-- `IncrementalWorkspace`
-- `IncrementalScanKind`
-- `IncrementalScanStats`
-- `DoctorReport`
-- `DoctorFileInfo`
+## Discovery and parsing
+
+- Respects `.gitignore` and Git exclude files
+- Always skips `node_modules`, `.git`, `vendor`, `target`, `dist`, `build`, `__pycache__`, `.tox`, `.venv`, `venv`
+- JSON files fall back to JSON5 parsing (comments, trailing commas, single-quoted strings)
+- YAML supports anchors and merge keys
+- `tsconfig` and ESLint `extends` chains are resolved with cycle detection
+- `eslint.config.*` files are statically parsed (not executed)
+- Extends targets outside the scan root are blocked and reported as `PARSE002`
+
+## Rule IDs
+
+| ID | Meaning |
+| --- | --- |
+| `VER001` | Version contradiction |
+| `PORT001` | Port contradiction |
+| `BOOL001` | Boolean contradiction |
+| `STR001` | String contradiction |
+| `<custom>` | Cross-concept rule violation (uses the `id` from `[[concept_rule]]`) |
+| `POL*` | Policy violation |
+| `PARSE001` | File read or parse failure |
+| `PARSE002` | Blocked or failed `extends` resolution |
+| `CONFIG001` | Invalid custom extractor configuration |
 
 ## CLI reference
 
-| Flag | Current behavior |
+| Flag | Description |
 | --- | --- |
-| `[PATH]` | Directory to scan. Defaults to `.`. With `--init`, `.conflic.toml` is created in this directory. |
-| `-f, --format <FORMAT>` | Output format: `terminal`, `json`, or `sarif`. Defaults to config first, then `terminal`. |
-| `-s, --severity <SEVERITY>` | Active severity threshold: `error`, `warning`, or `info`. Affects exit status and `--quiet`, not report filtering. |
-| `--check <A,B,...>` | Keep only selected concepts in the normal scan result. Accepts full concept IDs and built-in aliases. |
-| `--init` | Create a template `.conflic.toml`. Exits with code `3` if the file already exists. |
-| `-c, --config <PATH>` | Use an explicit config file. Relative paths are resolved from the scan root. |
-| `-q, --quiet` | Suppress output unless findings or diagnostics exist at or above the active threshold. |
-| `-v, --verbose` | Show consistent concepts as well as contradictory ones in terminal output. |
-| `--no-color` | Disable terminal colors. |
-| `--list-concepts` | Print built-in extractor IDs and descriptions, then exit. Custom extractors are not loaded for this command. |
-| `--doctor` | Run diagnostic mode and exit. |
-| `--diff <REF>` | Use Git to collect changed tracked files since `<REF>` plus untracked files, then run a diff-scoped scan. |
-| `--diff-stdin` | Read changed file paths from stdin, one path per line, and run the same diff-scoped scan. |
-| `--fix` | Build and print a fix plan, then apply proposals unless `--dry-run` is also set. |
-| `--dry-run` | With `--fix`, preview only. Returns code `1` if any proposal or unfixable item exists. |
-| `-y, --yes` | Skip the interactive confirmation prompt in fix mode. |
-| `--no-backup` | Do not create `*.conflic.bak` files when applying fixes. |
-| `--concept <CONCEPT>` | In fix mode, keep only proposals and unfixable items for one concept selector. |
-| `--baseline <PATH>` | Suppress findings and parse/config diagnostics that match the baseline file, if that file exists. |
-| `--update-baseline <PATH>` | Write a baseline JSON file from the current scan result, then continue normal reporting. |
-| `--lsp` | Start the LSP server on stdin/stdout. |
+| `[PATH]` | Directory to scan (default: `.`) |
+| `-f, --format` | Output format: `terminal`, `json`, `sarif` |
+| `-s, --severity` | Severity threshold: `error`, `warning`, `info` |
+| `--check <A,B,...>` | Only report selected concepts |
+| `--init` | Create a template `.conflic.toml` |
+| `-c, --config <PATH>` | Explicit config file path |
+| `-q, --quiet` | Suppress output when clean |
+| `-v, --verbose` | Also show consistent concepts |
+| `--no-color` | Disable colors |
+| `--list-concepts` | Print built-in extractors and exit |
+| `--doctor` | Run diagnostic mode |
+| `--diff <REF>` | Diff-scoped scan since a git ref |
+| `--diff-stdin` | Diff-scoped scan from stdin paths |
+| `--fix` | Auto-fix contradictions |
+| `--dry-run` | Preview fixes without applying |
+| `-y, --yes` | Skip confirmation prompt |
+| `--no-backup` | Don't create `.conflic.bak` files |
+| `--concept <ID>` | Limit fix to one concept |
+| `--baseline <PATH>` | Suppress known findings |
+| `--update-baseline <PATH>` | Save current findings as baseline |
+| `--record` | Record scan in `.conflic-history.json` |
+| `--trend` | Show trend report from scan history |
+| `--since <REF>` | Only show findings introduced since a git ref |
+| `--federate <PATH>` | Run federated scan across multiple repos |
+| `--init-federation` | Create a template `conflic-federation.toml` |
+| `--lsp` | Start the LSP server |
+
+## GitHub Action
+
+Use conflic as a CI gate to block PRs that introduce configuration contradictions.
+
+### Quick start
+
+```yaml
+- uses: onplt/conflic@v1
+  with:
+    severity: warning
+    fail-on: error
+```
+
+### Inputs
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `version` | `latest` | Conflic version to install (e.g., `1.0.1`) |
+| `path` | `.` | Directory to scan |
+| `severity` | `error` | Minimum severity to report: `error`, `warning`, `info` |
+| `fail-on` | `error` | Severity threshold that causes failure: `error`, `warning`, `info`, `none` |
+| `diff` | `""` | Git ref for diff-scoped scan. `auto` = PR base SHA |
+| `sarif-upload` | `true` | Upload SARIF to GitHub Code Scanning |
+| `baseline` | `""` | Path to baseline file |
+| `config` | `""` | Path to `.conflic.toml` |
+| `args` | `""` | Additional CLI arguments |
+
+### Outputs
+
+| Output | Description |
+| --- | --- |
+| `exit-code` | Raw conflic exit code (0/1/2) |
+| `error-count` | Number of error-level findings |
+| `warning-count` | Number of warning-level findings |
+| `sarif-file` | Path to generated SARIF file |
+
+### Scenarios
+
+**PR diff scan** — only check changed files:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: onplt/conflic@v1
+  with:
+    diff: auto
+    fail-on: error
+```
+
+**SARIF annotations** — inline PR comments via Code Scanning:
+
+```yaml
+permissions:
+  security-events: write
+steps:
+  - uses: actions/checkout@v4
+  - uses: onplt/conflic@v1
+    with:
+      sarif-upload: true
+      fail-on: none
+```
+
+**Baseline workflow** — suppress known issues:
+
+```yaml
+- uses: onplt/conflic@v1
+  with:
+    baseline: .conflic-baseline.json
+    diff: auto
+    fail-on: error
+```
+
+`severity` controls what conflic reports. `fail-on` controls what fails the action. This lets you annotate warnings in PRs without blocking merges.
+
+More examples in [`.github/examples/`](.github/examples/).
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | No error findings, and no warning findings when the active threshold is `warning` or lower |
-| `1` | Error-level contradiction or parse/config diagnostic, or an operational failure such as a config/Git error, rejected fix apply, or `--fix --dry-run` with work to do |
-| `2` | Warning-level findings are present and the active threshold is `warning` or `info` |
-| `3` | `--init` refused to overwrite an existing `.conflic.toml` |
-
-Info-only findings do not currently produce a non-zero exit code.
+| `0` | Clean (no findings at or above threshold) |
+| `1` | Error-level finding or operational failure |
+| `2` | Warning-level findings present |
+| `3` | `--init` refused (config already exists) |
 
 ## License
 

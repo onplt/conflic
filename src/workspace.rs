@@ -344,9 +344,19 @@ impl IncrementalWorkspace {
     }
 
     fn recompute_concept_results(&mut self, impacted_concepts: &HashSet<String>) {
+        let solvers = self.build_solver_registry();
         for concept_id in impacted_concepts {
             let assertions = self.assertions_for_concept(concept_id);
-            let result = solve::compare_assertions(&self.root, assertions, &self.config)
+            let mut results = solve::compare_assertions_with_solvers(
+                &self.root,
+                assertions,
+                &self.config,
+                &solvers,
+            );
+
+            crate::policy::evaluate_policies(&mut results, &self.config);
+
+            let result = results
                 .into_iter()
                 .find(|concept_result| concept_result.concept.id == *concept_id);
 
@@ -376,5 +386,17 @@ impl IncrementalWorkspace {
                     .cloned()
             })
             .collect()
+    }
+
+    fn build_solver_registry(&self) -> solve::SolverRegistry {
+        let mut registry = solve::SolverRegistry::new();
+        for custom in &self.config.custom_extractor {
+            if let Some(ref solver_name) = custom.solver
+                && let Some(solver) = solve::registry::solver_from_name(solver_name)
+            {
+                registry.register(custom.concept.clone(), solver);
+            }
+        }
+        registry
     }
 }

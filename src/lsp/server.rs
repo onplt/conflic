@@ -12,6 +12,7 @@ use crate::{IncrementalScanKind, IncrementalScanStats, IncrementalWorkspace};
 
 use super::code_actions;
 use super::diagnostics;
+use super::navigation;
 use super::state::{LspState, ScanRequest, ScanTrigger};
 use super::text_document::apply_content_changes;
 
@@ -337,6 +338,9 @@ impl LanguageServer for ConflicLspServer {
                     },
                 )),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                references_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -484,6 +488,106 @@ impl LanguageServer for ConflicLspServer {
                     .map(CodeActionOrCommand::CodeAction)
                     .collect(),
             ))
+        }
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let file_path = match params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_file_path()
+        {
+            Ok(raw_path) => match self.normalize_workspace_document_path(raw_path).await {
+                Some(path) => path,
+                None => return Ok(None),
+            },
+            Err(_) => return Ok(None),
+        };
+
+        let scan_result = self
+            .state
+            .scan_result
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let scan_result = match scan_result.as_ref() {
+            Some(result) => result,
+            None => return Ok(None),
+        };
+
+        Ok(navigation::build_hover(
+            scan_result,
+            &file_path,
+            &params.text_document_position_params.position,
+        ))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let file_path = match params
+            .text_document_position
+            .text_document
+            .uri
+            .to_file_path()
+        {
+            Ok(raw_path) => match self.normalize_workspace_document_path(raw_path).await {
+                Some(path) => path,
+                None => return Ok(None),
+            },
+            Err(_) => return Ok(None),
+        };
+
+        let scan_result = self
+            .state
+            .scan_result
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let scan_result = match scan_result.as_ref() {
+            Some(result) => result,
+            None => return Ok(None),
+        };
+
+        let locations = navigation::build_references(
+            scan_result,
+            &file_path,
+            &params.text_document_position.position,
+            params.context.include_declaration,
+        );
+
+        if locations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(locations))
+        }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let file_path = match params.text_document.uri.to_file_path() {
+            Ok(raw_path) => match self.normalize_workspace_document_path(raw_path).await {
+                Some(path) => path,
+                None => return Ok(None),
+            },
+            Err(_) => return Ok(None),
+        };
+
+        let scan_result = self
+            .state
+            .scan_result
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let scan_result = match scan_result.as_ref() {
+            Some(result) => result,
+            None => return Ok(None),
+        };
+
+        let symbols = navigation::build_document_symbols(scan_result, &file_path);
+
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
     }
 }

@@ -1,0 +1,19 @@
+# PR diff scan — only check files changed in the pull request
+name: Config Check (Diff)
+
+on:
+  pull_request:
+
+jobs:
+  conflic:
+    name: Configuration consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # required for diff mode
+
+      - uses: onplt/conflic@v1
+        with:
+          diff: auto        # automatically detects PR base
+          fail-on: error

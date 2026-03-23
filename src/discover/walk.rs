@@ -41,6 +41,22 @@ const KNOWN_CONFIG_FILES: &[&str] = &[
     "Gemfile",
     ".sdkmanrc",
     "global.json",
+    // Helm
+    "values.yaml",
+    "values.yml",
+    // Kubernetes manifests
+    "deployment.yaml",
+    "deployment.yml",
+    "service.yaml",
+    "service.yml",
+    "statefulset.yaml",
+    "statefulset.yml",
+    "pod.yaml",
+    "pod.yml",
+    "job.yaml",
+    "job.yml",
+    "cronjob.yaml",
+    "cronjob.yml",
 ];
 
 /// Filename prefixes that match config files.
@@ -183,6 +199,11 @@ impl FileDiscoverer {
 
         // .csproj files (.NET)
         if filename.ends_with(".csproj") {
+            return true;
+        }
+
+        // Terraform files
+        if filename.ends_with(".tf") {
             return true;
         }
 

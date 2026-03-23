@@ -171,17 +171,7 @@ fn format_location(loc: &SourceLocation, no_color: bool) -> String {
 }
 
 fn simplify_path(path: &Path) -> String {
-    let sanitized = crate::pathing::strip_windows_extended_length_prefix(path);
-
-    // Try to make path relative to current dir
-    if let Ok(cwd) = std::env::current_dir() {
-        let sanitized_cwd = crate::pathing::strip_windows_extended_length_prefix(&cwd);
-        if let Ok(rel) = sanitized.strip_prefix(&sanitized_cwd) {
-            return rel.to_string_lossy().to_string();
-        }
-    }
-
-    sanitized.to_string_lossy().to_string()
+    crate::pathing::simplify_path(path)
 }
 
 #[cfg(test)]

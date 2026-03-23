@@ -1,12 +1,15 @@
 pub mod custom;
 pub mod dotnet_version;
 pub mod go_version;
+pub mod helm;
 pub mod java_version;
+pub mod kubernetes;
 pub mod node_version;
 pub mod port;
 pub mod python_version;
 pub mod ruby_version;
 mod runtime_version;
+pub mod terraform;
 pub mod ts_strict;
 
 use crate::config::ConflicConfig;
@@ -111,6 +114,13 @@ pub fn default_extractors() -> Vec<Box<dyn Extractor>> {
         // TypeScript strict mode
         Box::new(ts_strict::TsconfigStrictExtractor),
         Box::new(ts_strict::EslintStrictExtractor),
+        // Infrastructure-as-Code (IaC)
+        Box::new(kubernetes::KubernetesVersionExtractor),
+        Box::new(kubernetes::KubernetesPortExtractor),
+        Box::new(helm::HelmValuesVersionExtractor),
+        Box::new(helm::HelmValuesPortExtractor),
+        Box::new(terraform::TerraformVersionExtractor),
+        Box::new(terraform::TerraformPortExtractor),
     ]
 }
 

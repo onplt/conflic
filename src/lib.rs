@@ -4,7 +4,10 @@ pub mod config;
 pub mod discover;
 pub mod error;
 pub mod extract;
+pub mod federation;
 pub mod fix;
+pub mod graph;
+pub mod history;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod model;
@@ -12,6 +15,7 @@ pub mod parse;
 mod pathing;
 mod pipeline;
 mod planning;
+pub mod policy;
 pub mod report;
 pub mod solve;
 mod workspace;

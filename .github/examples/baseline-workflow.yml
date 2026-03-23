@@ -1,0 +1,20 @@
+# Baseline workflow — suppress known issues, only fail on new contradictions
+name: Config Check (Baseline)
+
+on:
+  pull_request:
+
+jobs:
+  conflic:
+    name: Configuration consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: onplt/conflic@v1
+        with:
+          baseline: .conflic-baseline.json   # suppress known findings
+          diff: auto                          # only check PR changes
+          fail-on: error

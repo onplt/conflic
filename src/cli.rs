@@ -91,6 +91,26 @@ pub struct Cli {
     /// Start LSP server on stdin/stdout for editor integration
     #[arg(long)]
     pub lsp: bool,
+
+    /// Record this scan in the history file (.conflic-history.json)
+    #[arg(long)]
+    pub record: bool,
+
+    /// Show trend report from scan history
+    #[arg(long)]
+    pub trend: bool,
+
+    /// Only show findings introduced since the given git ref
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Run federated scan across multiple repositories using a config file
+    #[arg(long)]
+    pub federate: Option<PathBuf>,
+
+    /// Initialize a federation config template
+    #[arg(long)]
+    pub init_federation: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

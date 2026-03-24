@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import { execFile } from "child_process";
 import { getBinaryPath } from "./configuration";
 
@@ -93,8 +94,14 @@ function isExecutable(filePath: string): Promise<boolean> {
 function findOnPath(): Promise<string | undefined> {
   const cmd = process.platform === "win32" ? "where" : "which";
   return new Promise((resolve) => {
-    execFile(cmd, ["conflic"], (error, stdout) => {
+    execFile(cmd, ["conflic"], async (error, stdout) => {
       if (error || !stdout.trim()) {
+        if (process.platform !== "win32") {
+          const fallbackPath = path.join(os.homedir(), ".cargo", "bin", "conflic");
+          if (await isExecutable(fallbackPath)) {
+            return resolve(fallbackPath);
+          }
+        }
         resolve(undefined);
       } else {
         resolve(stdout.trim().split(/\r?\n/)[0]);

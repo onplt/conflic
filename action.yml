@@ -1,4 +1,4 @@
-name: "conflic"
+name: "conflic-scan"
 description: "Detect semantic contradictions across config files — CI gate for configuration drift"
 author: "onplt"
 

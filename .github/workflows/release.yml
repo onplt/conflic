@@ -248,7 +248,28 @@ jobs:
           node-version: "20"
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath vsix/*.vsix
+        run: |
+          for vsix in vsix/*.vsix; do
+            echo "Publishing $vsix..."
+            # Retry up to 3 times with a delay if it fails
+            for i in {1..3}; do
+              if npx @vscode/vsce publish --packagePath "$vsix"; then
+                echo "Successfully published $vsix"
+                break
+              else
+                if [ $i -lt 3 ]; then
+                  echo "Failed to publish $vsix, retrying in 30 seconds... (Attempt $i/3)"
+                  sleep 30
+                else
+                  echo "Error: Failed to publish $vsix after 3 attempts."
+                  exit 1
+                fi
+              fi
+            done
+            # Add a small delay between different packages to avoid overwhelming the Marketplace API
+            echo "Waiting 15 seconds before next package..."
+            sleep 15
+          done
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 

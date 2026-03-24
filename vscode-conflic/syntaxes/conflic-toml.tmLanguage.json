@@ -1,0 +1,75 @@
+{
+  "scopeName": "source.conflic-toml",
+  "name": "Conflic Config",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#table" },
+    { "include": "#array-table" },
+    { "include": "#key-value" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#boolean" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.conflic-toml"
+    },
+    "array-table": {
+      "match": "^\\s*(\\[\\[)([^\\]]*)(\\]\\])",
+      "captures": {
+        "1": { "name": "punctuation.definition.table.array.begin.conflic-toml" },
+        "2": { "name": "entity.name.section.conflic-toml" },
+        "3": { "name": "punctuation.definition.table.array.end.conflic-toml" }
+      }
+    },
+    "table": {
+      "match": "^\\s*(\\[)([^\\]]*)(\\])",
+      "captures": {
+        "1": { "name": "punctuation.definition.table.begin.conflic-toml" },
+        "2": { "name": "entity.name.section.conflic-toml" },
+        "3": { "name": "punctuation.definition.table.end.conflic-toml" }
+      }
+    },
+    "key-value": {
+      "match": "^\\s*([A-Za-z0-9_-]+)\\s*(=)",
+      "captures": {
+        "1": { "name": "variable.other.key.conflic-toml" },
+        "2": { "name": "keyword.operator.assignment.conflic-toml" }
+      }
+    },
+    "string": {
+      "patterns": [
+        {
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "name": "string.quoted.triple.conflic-toml"
+        },
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.conflic-toml",
+          "patterns": [
+            {
+              "match": "\\\\[btnfr\"\\\\]",
+              "name": "constant.character.escape.conflic-toml"
+            }
+          ]
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.conflic-toml"
+        }
+      ]
+    },
+    "number": {
+      "match": "(?<=\\s|=)\\s*[+-]?[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?",
+      "name": "constant.numeric.conflic-toml"
+    },
+    "boolean": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.conflic-toml"
+    }
+  }
+}

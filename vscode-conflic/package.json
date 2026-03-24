@@ -1,0 +1,203 @@
+{
+  "name": "conflic",
+  "displayName": "Conflic — Config Contradiction Detector",
+  "description": "Detect semantic contradictions across configuration files (Dockerfiles, package.json, .env, CI workflows, and more)",
+  "version": "0.1.1",
+  "publisher": "ConflicScan",
+  "license": "MIT",
+  "homepage": "https://github.com/onplt/conflic",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onplt/conflic"
+  },
+  "bugs": {
+    "url": "https://github.com/onplt/conflic/issues"
+  },
+  "icon": "icons/conflic.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "badges": [
+    {
+      "url": "https://github.com/onplt/conflic/actions/workflows/ci.yml/badge.svg",
+      "href": "https://github.com/onplt/conflic/actions/workflows/ci.yml",
+      "description": "CI"
+    },
+    {
+      "url": "https://img.shields.io/crates/v/conflic.svg",
+      "href": "https://crates.io/crates/conflic",
+      "description": "crates.io"
+    }
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "config",
+    "lint",
+    "contradictions",
+    "devops",
+    "docker",
+    "ci",
+    "semantic"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/.conflic.toml",
+    "workspaceContains:**/Dockerfile",
+    "workspaceContains:**/docker-compose.yml",
+    "workspaceContains:**/docker-compose.yaml",
+    "workspaceContains:**/package.json",
+    "workspaceContains:**/.nvmrc",
+    "workspaceContains:**/.env"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "conflic-toml",
+        "aliases": [
+          "Conflic Config"
+        ],
+        "filenames": [
+          ".conflic.toml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "conflic-toml",
+        "scopeName": "source.conflic-toml",
+        "path": "./syntaxes/conflic-toml.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "conflic.scanWorkspace",
+        "title": "Conflic: Scan Workspace",
+        "icon": "$(search)"
+      },
+      {
+        "command": "conflic.fixAll",
+        "title": "Conflic: Fix All Contradictions"
+      },
+      {
+        "command": "conflic.fixConcept",
+        "title": "Conflic: Fix Concept..."
+      },
+      {
+        "command": "conflic.showDoctor",
+        "title": "Conflic: Show Doctor Report"
+      },
+      {
+        "command": "conflic.initConfig",
+        "title": "Conflic: Initialize .conflic.toml"
+      },
+      {
+        "command": "conflic.showTrend",
+        "title": "Conflic: Show Trend History"
+      },
+      {
+        "command": "conflic.restartServer",
+        "title": "Conflic: Restart Language Server"
+      },
+      {
+        "command": "conflic.revealConceptInFiles",
+        "title": "Conflic: Show All Assertions for Concept"
+      }
+    ],
+    "configuration": {
+      "title": "Conflic",
+      "properties": {
+        "conflic.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the conflic binary. Leave empty to use the bundled binary or one found on PATH."
+        },
+        "conflic.severity": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info"
+          ],
+          "default": "warning",
+          "description": "Minimum severity level for reported diagnostics."
+        },
+        "conflic.autoScan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan on file changes. Disable to only scan via command."
+        },
+        "conflic.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between VS Code and the conflic language server."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "conflic-sidebar",
+          "title": "Conflic",
+          "icon": "icons/conflic.svg"
+        }
+      ]
+    },
+    "views": {
+      "conflic-sidebar": [
+        {
+          "id": "conflic.conceptOverview",
+          "name": "Concept Overview",
+          "type": "tree"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "conflic.scanWorkspace",
+          "when": "view == conflic.conceptOverview",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "conflic.revealConceptInFiles",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@types/which": "^3.0.3",
+    "esbuild": "^0.24.0",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "typescript": "^5.3.0"
+  }
+}

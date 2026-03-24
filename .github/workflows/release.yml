@@ -13,7 +13,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -85,14 +85,141 @@ jobs:
           name: conflic-${{ matrix.target }}
           path: conflic-${{ github.ref_name }}-${{ matrix.target }}.*
 
+  build-extension:
+    name: Build Extension Source
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-conflic
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-conflic/package-lock.json
+
+      - run: npm ci
+      - run: npm run compile
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist
+          path: vscode-conflic/dist/
+
+  package-vsix:
+    name: Package VSIX (${{ matrix.vscode-target }})
+    needs: [build, build-extension]
+    strategy:
+      matrix:
+        include:
+          - vscode-target: linux-x64
+            rust-target: x86_64-unknown-linux-gnu
+            binary-name: conflic
+          - vscode-target: linux-arm64
+            rust-target: aarch64-unknown-linux-gnu
+            binary-name: conflic
+          - vscode-target: darwin-x64
+            rust-target: x86_64-apple-darwin
+            binary-name: conflic
+          - vscode-target: darwin-arm64
+            rust-target: aarch64-apple-darwin
+            binary-name: conflic
+          - vscode-target: win32-x64
+            rust-target: x86_64-pc-windows-msvc
+            binary-name: conflic.exe
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-conflic
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-conflic/package-lock.json
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-dist
+          path: vscode-conflic/dist/
+
+      - name: Download Rust Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: conflic-${{ matrix.rust-target }}
+          path: bin/
+
+      - name: Prepare Binary
+        run: |
+          ARCHIVE_NAME=$(ls bin/conflic-${{ github.ref_name }}-${{ matrix.rust-target }}.*)
+          if [[ "$ARCHIVE_NAME" == *.tar.gz ]]; then
+            tar xzf "$ARCHIVE_NAME" -C bin/
+          else
+            unzip "$ARCHIVE_NAME" -d bin/
+          fi
+          
+          PLATFORM_ARCH="${{ matrix.vscode-target }}"
+          EXT=""
+          if [[ "$PLATFORM_ARCH" == win32-* ]]; then
+            EXT=".exe"
+          fi
+          mv "bin/${{ matrix.binary-name }}" "bin/conflic-${PLATFORM_ARCH}${EXT}"
+          chmod +x "bin/conflic-${PLATFORM_ARCH}${EXT}" 2>/dev/null || true
+          rm bin/*.tar.gz bin/*.zip 2>/dev/null || true
+
+      - name: Package VSIX
+        run: npx @vscode/vsce package --target ${{ matrix.vscode-target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vscode-target }}
+          path: vscode-conflic/*.vsix
+
+  package-universal:
+    name: Package Universal VSIX
+    needs: build-extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-conflic
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode-conflic/package-lock.json
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension-dist
+          path: vscode-conflic/dist/
+
+      - name: Package universal VSIX
+        run: npx @vscode/vsce package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-universal
+          path: vscode-conflic/*.vsix
+
   release:
-    name: Create Release
-    needs: build
+    name: Create GitHub Release
+    needs: [build, package-vsix, package-universal]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -104,7 +231,28 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
-  publish:
+  publish-marketplace:
+    name: Publish to VS Code Marketplace
+    needs: release
+    runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: vsix/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --packagePath vsix/*.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+  publish-crates-io:
     name: Publish to crates.io
     needs: release
     runs-on: ubuntu-latest

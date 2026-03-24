@@ -11,6 +11,7 @@
   <a href="https://crates.io/crates/conflic"><img src="https://img.shields.io/crates/v/conflic.svg" alt="crates.io"></a>
   <a href="https://github.com/onplt/conflic/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/conflic.svg" alt="License: MIT"></a>
   <a href="https://github.com/onplt/conflic/releases"><img src="https://img.shields.io/github/v/release/onplt/conflic" alt="GitHub Release"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ConflicScan.conflic"><img src="https://img.shields.io/visual-studio-marketplace/v/ConflicScan.conflic?label=VS%20Code" alt="VS Code Marketplace"></a>
 </p>
 
 ---
@@ -44,7 +45,7 @@ cargo install conflic
 From source:
 
 ```bash
-git clone https://github.com/conflic/conflic.git
+git clone https://github.com/onplt/conflic.git
 cd conflic
 cargo install --path .
 ```
@@ -70,6 +71,55 @@ conflic --trend                              # show trend report
 conflic --federate federation.toml           # scan multiple repos
 conflic --init                               # create a starter .conflic.toml
 ```
+
+### Example output
+
+```
+$ conflic
+
+  Node.js Version  CONTRADICTION
+
+    ✖ Dockerfile:1          FROM node:22-alpine          (enforced)
+    ✖ .nvmrc:1              20                           (advisory)
+    ✖ package.json:5        engines: ">=18 <20"          (declared)
+
+  Application Port  CONTRADICTION
+
+    ✖ Dockerfile:5          EXPOSE 3000                  (enforced)
+    ✖ docker-compose.yml:8  ports: "6379:6379"           (enforced)
+
+  2 concepts · 3 errors · 1 warning · 0 info
+```
+
+## Editor integration
+
+### VS Code Extension
+
+The easiest way to use conflic is the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=ConflicScan.conflic). Install it from the Marketplace and contradictions show up as squiggly underlines the moment you open a project — no setup needed.
+
+The extension provides:
+- **Real-time diagnostics** with inline squiggles and problem panel entries
+- **Hover cards** showing concept details, authority levels, and all peer declarations
+- **Quick Fix** code actions (click the lightbulb or press `Ctrl+.`) with authority-based auto-resolution
+- **Go-to-peer references** to jump between files asserting the same concept
+- **Concept Overview sidebar** with a tree view of every detected concept
+- **Status bar counter** showing remaining errors and warnings
+
+Search "Conflic" in the Extensions panel or install from the command line:
+
+```bash
+code --install-extension ConflicScan.conflic
+```
+
+### Other editors
+
+Any editor with LSP support can use conflic as a language server:
+
+```bash
+conflic --lsp
+```
+
+The server communicates over stdin/stdout. Point your editor's LSP client to the conflic binary with the `--lsp` flag. See the [LSP server](#lsp-server) section for details on supported capabilities.
 
 ## What conflic knows about
 
@@ -322,11 +372,15 @@ Backups are written as `*.conflic.bak` unless `--no-backup` is passed. All write
 
 ## LSP server
 
+> **Tip:** If you use VS Code, you don't need to configure the LSP manually — the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=ConflicScan.conflic) handles everything for you.
+
+For other editors, start the server with:
+
 ```bash
 conflic --lsp
 ```
 
-The LSP server provides:
+The server communicates over stdin/stdout using the Language Server Protocol. It provides:
 
 - **Diagnostics** for contradictions and parse errors on both sides of each finding
 - **Hover** showing the concept name, authority, all peer declarations, and contradiction status
@@ -490,6 +544,21 @@ More examples in [`.github/examples/`](.github/examples/).
 | `1` | Error-level finding or operational failure |
 | `2` | Warning-level findings present |
 | `3` | `--init` refused (config already exists) |
+
+## Contributing
+
+Contributions are welcome! Whether it's a bug report, a new extractor, or a documentation fix — every bit helps.
+
+```bash
+git clone https://github.com/onplt/conflic.git
+cd conflic
+cargo build
+cargo test
+```
+
+If you're adding a new extractor, drop a test fixture in `tests/fixtures/` and add an integration test. See the existing extractors in `src/` for the pattern to follow.
+
+Please open an issue before starting on large features so we can align on the approach.
 
 ## License
 

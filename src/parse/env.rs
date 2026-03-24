@@ -18,7 +18,7 @@ pub fn parse_env(raw: &str) -> Vec<EnvEntry> {
         // Split on first '='
         if let Some((key, value)) = stripped.split_once('=') {
             let key = key.trim().to_string();
-            let value = unquote(strip_inline_comment(value.trim()).trim());
+            let value = unquote(strip_inline_comment(value).trim());
             entries.push(EnvEntry {
                 key,
                 value,
@@ -44,7 +44,7 @@ fn strip_inline_comment(s: &str) -> &str {
     let mut in_single_quotes = false;
     let mut in_double_quotes = false;
     let mut escaped = false;
-    let mut previous_is_whitespace = true;
+    let mut previous_is_whitespace = false;
 
     for (idx, ch) in s.char_indices() {
         if escaped {
@@ -112,5 +112,36 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].value, "hello # still here");
+    }
+
+    #[test]
+    fn test_parse_env_preserves_hash_at_value_start() {
+        // Bug 2: `CHANNEL=#general` was incorrectly stripped because
+        // previous_is_whitespace started as true and value was pre-trimmed.
+        let input = "CHANNEL=#general\n";
+        let entries = parse_env(input);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].value, "#general");
+    }
+
+    #[test]
+    fn test_parse_env_strips_comment_after_space_hash() {
+        // `KEY=value #comment` should still strip the comment
+        let input = "KEY=value #comment\n";
+        let entries = parse_env(input);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].value, "value");
+    }
+
+    #[test]
+    fn test_parse_env_space_then_hash_is_comment() {
+        // `KEY= #comment` — value is empty, `#comment` is a comment
+        let input = "KEY= #comment\n";
+        let entries = parse_env(input);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].value, "");
     }
 }

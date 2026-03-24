@@ -201,6 +201,7 @@ impl CiYamlCollectionContext<'_> {
                         self.raw_text,
                         key,
                         item_index,
+                        Some(&rendered_value),
                     )
                     .unwrap_or_else(|| {
                         let line = find_line_for_key_value(self.raw_text, key, &rendered_value);

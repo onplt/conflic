@@ -23,6 +23,7 @@ pub fn sequence_scalar_literal_for_key(
     raw: &str,
     key: &str,
     item_index: usize,
+    rendered_hint: Option<&str>,
 ) -> Option<(usize, String)> {
     let lines: Vec<&str> = raw.lines().collect();
 
@@ -39,7 +40,10 @@ pub fn sequence_scalar_literal_for_key(
         let remainder = strip_yaml_prefix_tokens(remainder);
 
         if let Some(literal) = nth_inline_sequence_scalar_literal(remainder, item_index) {
-            return Some((line_index + 1, literal));
+            if hint_matches(rendered_hint, &literal) {
+                return Some((line_index + 1, literal));
+            }
+            continue;
         }
 
         if remainder.trim().is_empty()
@@ -50,11 +54,32 @@ pub fn sequence_scalar_literal_for_key(
                 item_index,
             )
         {
-            return Some((line, literal));
+            if hint_matches(rendered_hint, &literal) {
+                return Some((line, literal));
+            }
+            continue;
         }
     }
 
     None
+}
+
+/// Check whether a raw literal matches a rendered hint value.
+/// When no hint is provided, always matches (backwards-compatible).
+/// Falls back to f64 comparison to handle YAML float precision (e.g. "3.10" vs "3.1").
+fn hint_matches(hint: Option<&str>, literal: &str) -> bool {
+    let Some(hint) = hint else {
+        return true;
+    };
+    if hint == literal {
+        return true;
+    }
+    // YAML float precision: serde renders 3.10 as "3.1", but the raw literal is "3.10".
+    // Compare as f64 to handle this mismatch.
+    if let (Ok(hint_f), Ok(lit_f)) = (hint.parse::<f64>(), literal.parse::<f64>()) {
+        return hint_f == lit_f;
+    }
+    false
 }
 
 pub fn line_for_key_path(raw: &str, key_path: &str) -> Option<usize> {
@@ -419,11 +444,11 @@ mod tests {
         let raw = "python-version: [3.10, '3.11'] # keep precision\n";
 
         assert_eq!(
-            sequence_scalar_literal_for_key(raw, "python-version", 0),
+            sequence_scalar_literal_for_key(raw, "python-version", 0, None),
             Some((1, "3.10".to_string()))
         );
         assert_eq!(
-            sequence_scalar_literal_for_key(raw, "python-version", 1),
+            sequence_scalar_literal_for_key(raw, "python-version", 1, None),
             Some((1, "3.11".to_string()))
         );
     }
@@ -433,12 +458,65 @@ mod tests {
         let raw = "python-version:\n  - 3.10\n  - \"3.11\"\n";
 
         assert_eq!(
-            sequence_scalar_literal_for_key(raw, "python-version", 0),
+            sequence_scalar_literal_for_key(raw, "python-version", 0, None),
             Some((2, "3.10".to_string()))
         );
         assert_eq!(
-            sequence_scalar_literal_for_key(raw, "python-version", 1),
+            sequence_scalar_literal_for_key(raw, "python-version", 1, None),
             Some((3, "3.11".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_sequence_scalar_literal_for_key_disambiguates_with_hint() {
+        // Two different jobs both have a "python-version" key with different values.
+        let raw = "\
+build:
+  python-version:
+    - 3.9
+    - 3.10
+test:
+  python-version:
+    - 3.11
+    - 3.12
+";
+        // Without hint (None), returns first match — "build" block
+        assert_eq!(
+            sequence_scalar_literal_for_key(raw, "python-version", 0, None),
+            Some((3, "3.9".to_string()))
+        );
+
+        // With hint "3.11", skips "build" block and finds "test" block
+        assert_eq!(
+            sequence_scalar_literal_for_key(raw, "python-version", 0, Some("3.11")),
+            Some((7, "3.11".to_string()))
+        );
+        assert_eq!(
+            sequence_scalar_literal_for_key(raw, "python-version", 1, Some("3.12")),
+            Some((8, "3.12".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_sequence_scalar_literal_for_key_hint_handles_yaml_float_precision() {
+        // YAML parses 3.10 as float 3.1; hint from serde is "3.1" but literal is "3.10"
+        let raw = "python-version: [3.10, 3.11]\n";
+
+        // hint "3.1" should match literal "3.10" via f64 comparison
+        assert_eq!(
+            sequence_scalar_literal_for_key(raw, "python-version", 0, Some("3.1")),
+            Some((1, "3.10".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_sequence_scalar_literal_for_key_hint_no_match_returns_none() {
+        let raw = "python-version: [3.9]\n";
+
+        // Hint that doesn't match any occurrence
+        assert_eq!(
+            sequence_scalar_literal_for_key(raw, "python-version", 0, Some("3.12")),
+            None
         );
     }
 

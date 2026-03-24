@@ -54,8 +54,7 @@ fi
 echo "::group::conflic scan"
 echo "Running: conflic ${CLI_ARGS[*]} --format json"
 
-JSON_OUTPUT=$(conflic "${CLI_ARGS[@]}" --format json 2>&1) || true
-CONFLIC_EXIT=$?
+JSON_OUTPUT=$(conflic "${CLI_ARGS[@]}" --format json 2>&1) && CONFLIC_EXIT=$? || CONFLIC_EXIT=$?
 
 # Display terminal-friendly output
 conflic "${CLI_ARGS[@]}" --format terminal 2>&1 || true
@@ -80,15 +79,12 @@ if [ "$ERROR_COUNT" = "0" ] && [ "$WARNING_COUNT" = "0" ]; then
   esac
 fi
 
-# --- Generate SARIF if requested ---
-SARIF_FILE=""
-if [ "$SARIF_UPLOAD" = "true" ]; then
-  SARIF_FILE="${RUNNER_TEMP:-/tmp}/conflic-results.sarif"
-  echo "::group::Generating SARIF"
-  conflic "${CLI_ARGS[@]}" --format sarif -q > "$SARIF_FILE" 2>/dev/null || true
-  echo "SARIF written to ${SARIF_FILE}"
-  echo "::endgroup::"
-fi
+# --- Generate SARIF (always, for outputs; upload is controlled by action.yml) ---
+SARIF_FILE="${RUNNER_TEMP:-/tmp}/conflic-results.sarif"
+echo "::group::Generating SARIF"
+conflic "${CLI_ARGS[@]}" --format sarif -q > "$SARIF_FILE" 2>/dev/null || true
+echo "SARIF written to ${SARIF_FILE}"
+echo "::endgroup::"
 
 # --- Set outputs ---
 {

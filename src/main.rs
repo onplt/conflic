@@ -169,6 +169,97 @@ fn main() -> Result<()> {
             .with_context(|| format!("Scan failed for {}", scan_path.display()))?
     };
 
+    // Topology analysis mode
+    if cli.topology {
+        let parsed_files = conflic::parse_files_for_topology(&scan_path, &config);
+        let topo_report = conflic::topology::analyze_topology(&parsed_files, &scan_path);
+
+        let output = match output_format {
+            conflic::cli::OutputFormat::Json => {
+                conflic::topology::render_topology_json(&topo_report)
+            }
+            _ => conflic::topology::render_topology_report(&topo_report, cli.no_color),
+        };
+        print!("{}", output);
+
+        let errors = topo_report
+            .findings
+            .iter()
+            .filter(|f| f.severity == conflic::topology::TopologySeverity::Error)
+            .count();
+        if errors > 0 {
+            process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // Capture organizational baseline
+    if let Some(ref capture_path) = cli.capture_baseline {
+        let baseline = conflic::drift::capture_baseline(&result);
+        let toml_str = toml::to_string_pretty(&baseline)
+            .with_context(|| "Failed to serialize organizational baseline")?;
+        std::fs::write(capture_path, toml_str)
+            .with_context(|| format!("Failed to write baseline to {}", capture_path.display()))?;
+        if !cli.quiet {
+            eprintln!(
+                "Organizational baseline captured: {} expectation(s) saved to {}",
+                baseline.expectation.len(),
+                capture_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    // Check drift against organizational baseline
+    if let Some(ref drift_path) = cli.drift_baseline {
+        let baseline = conflic::drift::load_organizational_baseline(drift_path)
+            .with_context(|| format!("Failed to load baseline from {}", drift_path.display()))?;
+        let drift_report = conflic::drift::compare_to_baseline(&result, &baseline, &scan_path);
+
+        let output = match output_format {
+            conflic::cli::OutputFormat::Json => conflic::drift::render_drift_json(&drift_report),
+            _ => conflic::drift::render_drift_report(&drift_report, cli.no_color),
+        };
+        print!("{}", output);
+
+        // Exit with error if conformance is below 100%
+        if drift_report.conformance_score < 1.0 {
+            process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // Impact analysis mode
+    if cli.impact {
+        let changed_files: Vec<std::path::PathBuf> = if let Some(ref git_ref) = cli.diff {
+            conflic::git_changed_files(&scan_path, git_ref).with_context(|| {
+                format!("Failed to collect changed files for git ref {}", git_ref)
+            })?
+        } else {
+            eprintln!(
+                "Warning: --impact works best with --diff <ref>; showing impact for all files."
+            );
+            result
+                .concept_results
+                .iter()
+                .flat_map(|cr| &cr.assertions)
+                .map(|a| a.source.file.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+
+        let impact_report =
+            conflic::impact::analyze_impact(&result, &changed_files, &scan_path, &config);
+
+        let output = match output_format {
+            conflic::cli::OutputFormat::Json => conflic::impact::render_impact_json(&impact_report),
+            _ => conflic::impact::render_impact_report(&impact_report, cli.no_color),
+        };
+        print!("{}", output);
+        return Ok(());
+    }
+
     if let Some(ref checked_concepts) = cli.check {
         filter_scan_result_by_concepts(&mut result, checked_concepts);
     }

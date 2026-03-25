@@ -298,6 +298,7 @@ fn build_scan_result(
 
     crate::policy::evaluate_policies(&mut concept_results, config);
     crate::graph::evaluate_concept_rules(&mut concept_results, config);
+    crate::promote::evaluate_promotions(&mut concept_results, config);
 
     ScanResult {
         concept_results,
@@ -314,5 +315,23 @@ fn build_solver_registry(config: &ConflicConfig) -> solve::SolverRegistry {
             registry.register(custom.concept.clone(), solver);
         }
     }
+
+    // Register N-ary constraint solvers for built-in version concepts.
+    // These reduce O(n^2) pairwise comparisons to O(n log n) in monorepos.
+    let version_concepts = [
+        "node-version",
+        "python-version",
+        "go-version",
+        "java-version",
+        "ruby-version",
+        "dotnet-version",
+    ];
+    for concept_id in &version_concepts {
+        registry.register_constraint(
+            (*concept_id).to_string(),
+            Box::new(solve::constraint::VersionConstraintSolver),
+        );
+    }
+
     registry
 }

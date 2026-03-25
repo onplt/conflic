@@ -32,6 +32,11 @@ Your `.nvmrc` says Node 20. Your `Dockerfile` pulls `node:18-alpine`. Your CI ma
 - **Multi-repo federation** to detect cross-repository drift across a fleet
 - **Auto-fix** for supported file types, with previews and backups
 - **LSP server** with live diagnostics, hover info, go-to-peer references, and quick-fix code actions
+- **Impact analysis** to visualize the blast radius of configuration changes
+- **Service topology mapping** from docker-compose and Kubernetes manifests
+- **Organizational drift baselines** to enforce fleet-wide version standards
+- **Environment promotion chains** to detect cross-environment drift (dev → staging → prod)
+- **Wasm plugin system** for custom extractors and solvers (behind `wasm` feature flag)
 - **Multiple output formats**: terminal, JSON, and SARIF
 
 ## Installation
@@ -56,6 +61,12 @@ Without the LSP server:
 cargo install conflic --no-default-features
 ```
 
+With Wasm plugin support:
+
+```bash
+cargo install conflic --features wasm
+```
+
 ## Quick start
 
 ```bash
@@ -70,6 +81,10 @@ conflic --record                             # scan and save to history
 conflic --trend                              # show trend report
 conflic --federate federation.toml           # scan multiple repos
 conflic --init                               # create a starter .conflic.toml
+conflic --diff HEAD~1 --impact               # show blast radius of changes
+conflic --topology                           # map service dependencies
+conflic --capture-baseline org.toml          # capture organizational baseline
+conflic --drift-baseline org.toml            # check conformance against baseline
 ```
 
 ### Example output
@@ -285,6 +300,28 @@ requires = ">= 22.3"
 
 Cross-concept rules are evaluated after per-concept contradiction detection and policy evaluation. The `when.matches` field supports semver ranges and exact values. The `then.requires` field uses the same format. Findings from concept rules appear as additional entries in the scan results.
 
+### Wasm plugins
+
+> **Note:** Requires the `wasm` feature flag (`cargo install conflic --features wasm`).
+
+Extend conflic with custom extractors and solvers written as WebAssembly modules:
+
+```toml
+[[plugin]]
+name = "my-extractor"
+path = "plugins/my-extractor.wasm"
+kind = "extractor"                    # "extractor", "solver", or "both"
+file_patterns = ["*.custom"]
+
+[[plugin]]
+name = "my-solver"
+path = "plugins/my-solver.wasm"
+kind = "solver"
+concepts = ["my-concept"]
+```
+
+Plugins communicate via JSON through linear memory. Extractor plugins export `conflic_extract(ptr, len) -> i64`, solver plugins export `conflic_solve(ptr, len) -> i64`. Both must also export `conflic_alloc(len) -> i32` and `conflic_dealloc(ptr, len)` for memory management.
+
 ## Scan history and trends
 
 Track configuration integrity over time with scan history:
@@ -356,6 +393,85 @@ conflic --baseline .conflic-baseline.json          # suppress known issues
 
 Baselines track findings by rule ID, concept, severity, file path, and value, so new contradictions are still caught even if old ones are suppressed.
 
+### Organizational drift baselines
+
+Capture a snapshot of your current configuration values as an organizational standard, then check any repository for conformance:
+
+```bash
+conflic --capture-baseline .conflic-baseline.toml   # save current values as the standard
+conflic --drift-baseline .conflic-baseline.toml     # check conformance against the standard
+```
+
+The captured baseline is a TOML file containing expected values and optional tolerances for each concept:
+
+```toml
+version = "1.0"
+
+[[expectation]]
+concept = "node-version"
+expected = "20.11.0"
+tolerance = "20.x"
+
+[[expectation]]
+concept = "python-version"
+expected = "3.12.2"
+```
+
+Drift is classified as **exact** (matches), **minor** (within tolerance, e.g. patch difference), **major** (outside tolerance), or **missing** (concept expected but not found). This is useful for enforcing fleet-wide standards across many repositories.
+
+### Impact analysis
+
+When using `--diff`, add `--impact` to see the blast radius of your changes:
+
+```bash
+conflic --diff origin/main --impact
+```
+
+The impact report shows:
+
+- **Root changes**: files you directly modified
+- **Direct impacts**: peer files that share concepts with your changes
+- **Transitive impacts**: files affected via cross-concept rule dependencies
+- **Blast radius summary**: total files affected, concepts affected, and worst severity
+
+### Service topology
+
+Analyze service dependencies from docker-compose and Kubernetes manifests:
+
+```bash
+conflic --topology
+```
+
+This builds a service dependency graph by extracting:
+
+- **docker-compose**: service names, ports, `depends_on`, `links`, and environment variable cross-references
+- **Kubernetes**: Deployments, Services, StatefulSets, Jobs, and CronJobs with label-based selector matching
+
+The output includes a list of services with their ports and dependencies, plus detected edges (depends_on, link, env reference, selector match) between services.
+
+### Environment promotion chains
+
+Track configuration consistency across deployment environments (e.g. dev → staging → prod):
+
+```toml
+[promotion]
+chain = ["dev", "staging", "prod"]
+
+[[promotion.pattern]]
+environment = "dev"
+files = ["*.dev.*", "*.dev"]
+
+[[promotion.pattern]]
+environment = "staging"
+files = ["*.staging.*", "*.staging"]
+
+[[promotion.pattern]]
+environment = "prod"
+files = ["*.prod.*", "*.prod"]
+```
+
+When configured, conflic compares assertion values across environments in chain order. Cross-environment contradictions produce `PROMO001` findings with warning severity.
+
 ## Auto-fix
 
 ```bash
@@ -424,6 +540,7 @@ Key exports: `scan`, `scan_with_overrides`, `scan_diff`, `scan_doctor`, `git_cha
 | `STR001` | String contradiction |
 | `<custom>` | Cross-concept rule violation (uses the `id` from `[[concept_rule]]`) |
 | `POL*` | Policy violation |
+| `PROMO001` | Cross-environment promotion chain violation |
 | `PARSE001` | File read or parse failure |
 | `PARSE002` | Blocked or failed `extends` resolution |
 | `CONFIG001` | Invalid custom extractor configuration |
@@ -457,6 +574,10 @@ Key exports: `scan`, `scan_with_overrides`, `scan_diff`, `scan_doctor`, `git_cha
 | `--since <REF>` | Only show findings introduced since a git ref |
 | `--federate <PATH>` | Run federated scan across multiple repos |
 | `--init-federation` | Create a template `conflic-federation.toml` |
+| `--impact` | Show blast radius of changes (use with `--diff`) |
+| `--capture-baseline <PATH>` | Capture current scan as an organizational baseline |
+| `--drift-baseline <PATH>` | Check conformance against an organizational baseline |
+| `--topology` | Analyze service topology from docker-compose and Kubernetes |
 | `--lsp` | Start the LSP server |
 
 ## GitHub Action

@@ -2,7 +2,7 @@
   "name": "conflic",
   "displayName": "Conflic — Config Contradiction Detector",
   "description": "Detect semantic contradictions across configuration files (Dockerfiles, package.json, .env, CI workflows, and more)",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "ConflicScan",
   "license": "MIT",
   "homepage": "https://github.com/onplt/conflic",

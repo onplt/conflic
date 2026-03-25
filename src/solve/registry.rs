@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::constraint::ConstraintSolver;
 use super::solver_trait::Solver;
 use super::{Compatibility, boolean, port, string, version};
 use crate::model::SemanticType;
@@ -10,8 +11,10 @@ use crate::model::SemanticType;
 /// using that solver instead of the default type-dispatched comparison.
 #[derive(Default)]
 pub struct SolverRegistry {
-    /// Maps concept ID → solver.
+    /// Maps concept ID → pairwise solver.
     concept_solvers: HashMap<String, Box<dyn Solver>>,
+    /// Maps concept ID → N-ary constraint solver (opt-in upgrade).
+    constraint_solvers: HashMap<String, Box<dyn ConstraintSolver>>,
 }
 
 impl SolverRegistry {
@@ -19,14 +22,24 @@ impl SolverRegistry {
         Self::default()
     }
 
-    /// Register a solver for a specific concept.
+    /// Register a pairwise solver for a specific concept.
     pub fn register(&mut self, concept_id: String, solver: Box<dyn Solver>) {
         self.concept_solvers.insert(concept_id, solver);
     }
 
-    /// Look up the solver for a concept, if one is registered.
+    /// Register an N-ary constraint solver for a specific concept.
+    pub fn register_constraint(&mut self, concept_id: String, solver: Box<dyn ConstraintSolver>) {
+        self.constraint_solvers.insert(concept_id, solver);
+    }
+
+    /// Look up the pairwise solver for a concept, if one is registered.
     pub fn get(&self, concept_id: &str) -> Option<&dyn Solver> {
         self.concept_solvers.get(concept_id).map(|s| s.as_ref())
+    }
+
+    /// Look up the constraint solver for a concept, if one is registered.
+    pub fn get_constraint(&self, concept_id: &str) -> Option<&dyn ConstraintSolver> {
+        self.constraint_solvers.get(concept_id).map(|s| s.as_ref())
     }
 }
 

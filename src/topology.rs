@@ -115,24 +115,23 @@ pub fn build_service_graph(parsed_files: &[ParsedFile], scan_root: &Path) -> Ser
     let mut graph = ServiceGraph::default();
 
     for file in parsed_files {
-        let rel = file
-            .path
-            .strip_prefix(scan_root)
-            .unwrap_or(&file.path);
+        let rel = file.path.strip_prefix(scan_root).unwrap_or(&file.path);
         let filename = file
             .path
             .file_name()
             .map(|n| n.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
-        if filename.starts_with("docker-compose") && (filename.ends_with(".yml") || filename.ends_with(".yaml")) {
+        if filename.starts_with("docker-compose")
+            && (filename.ends_with(".yml") || filename.ends_with(".yaml"))
+        {
             if let FileContent::Yaml(ref value) = file.content {
                 extract_compose_services(value, rel, file, &mut graph);
             }
-        } else if is_k8s_filename(&filename) || has_k8s_path_hint(&file.path) {
-            if let FileContent::Yaml(ref value) = file.content {
-                extract_k8s_resources(value, rel, file, &mut graph);
-            }
+        } else if (is_k8s_filename(&filename) || has_k8s_path_hint(&file.path))
+            && let FileContent::Yaml(ref value) = file.content
+        {
+            extract_k8s_resources(value, rel, file, &mut graph);
         }
     }
 
@@ -147,11 +146,16 @@ pub fn build_service_graph(parsed_files: &[ParsedFile], scan_root: &Path) -> Ser
 
 fn is_k8s_filename(lower: &str) -> bool {
     let k8s_stems = [
-        "deployment", "statefulset", "service", "job", "cronjob", "pod", "daemonset",
+        "deployment",
+        "statefulset",
+        "service",
+        "job",
+        "cronjob",
+        "pod",
+        "daemonset",
     ];
     k8s_stems.iter().any(|stem| {
-        lower.starts_with(stem)
-            && (lower.ends_with(".yml") || lower.ends_with(".yaml"))
+        lower.starts_with(stem) && (lower.ends_with(".yml") || lower.ends_with(".yaml"))
     })
 }
 
@@ -209,10 +213,10 @@ fn extract_compose_services(
             }
             Some(serde_json::Value::Array(arr)) => {
                 for item in arr {
-                    if let Some(s) = item.as_str() {
-                        if let Some((k, v)) = s.split_once('=') {
-                            node.environment.insert(k.trim().into(), v.trim().into());
-                        }
+                    if let Some(s) = item.as_str()
+                        && let Some((k, v)) = s.split_once('=')
+                    {
+                        node.environment.insert(k.trim().into(), v.trim().into());
                     }
                 }
             }
@@ -331,10 +335,10 @@ fn parse_compose_port_str(s: &str, node: &mut ServiceNode) {
             // ip:host:container
             if let Some(container) = parse_port_or_range_first(segments.last().unwrap()) {
                 node.container_ports.push(container);
-                if segments.len() >= 2 {
-                    if let Some(host) = parse_port_or_range_first(segments[segments.len() - 2]) {
-                        node.port_mappings.push((host, container));
-                    }
+                if segments.len() >= 2
+                    && let Some(host) = parse_port_or_range_first(segments[segments.len() - 2])
+                {
+                    node.port_mappings.push((host, container));
                 }
             }
         }
@@ -370,7 +374,15 @@ fn extract_k8s_resources(
     }
 
     let line = find_line(&file.raw_text, &name);
-    let workload_kinds = ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Pod", "Job", "CronJob"];
+    let workload_kinds = [
+        "Deployment",
+        "StatefulSet",
+        "DaemonSet",
+        "ReplicaSet",
+        "Pod",
+        "Job",
+        "CronJob",
+    ];
 
     if workload_kinds.contains(&kind) {
         let mut node = ServiceNode {
@@ -419,10 +431,10 @@ fn extract_k8s_resources(
         for container in &containers {
             if let Some(ports) = container.get("ports").and_then(|v| v.as_array()) {
                 for port_obj in ports {
-                    if let Some(cp) = port_obj.get("containerPort").and_then(|v| v.as_u64()) {
-                        if let Ok(p) = u16::try_from(cp) {
-                            node.container_ports.push(p);
-                        }
+                    if let Some(cp) = port_obj.get("containerPort").and_then(|v| v.as_u64())
+                        && let Ok(p) = u16::try_from(cp)
+                    {
+                        node.container_ports.push(p);
                     }
                 }
             }
@@ -478,20 +490,18 @@ fn extract_k8s_resources(
             .and_then(|v| v.as_array())
         {
             for port_obj in ports {
-                if let Some(tp) = port_obj.get("targetPort").and_then(|v| v.as_u64()) {
-                    if let Ok(p) = u16::try_from(tp) {
-                        node.container_ports.push(p);
-                    }
+                if let Some(tp) = port_obj.get("targetPort").and_then(|v| v.as_u64())
+                    && let Ok(p) = u16::try_from(tp)
+                {
+                    node.container_ports.push(p);
                 }
                 // Also check port (the service port, used for host-side mapping)
-                if let Some(sp) = port_obj.get("port").and_then(|v| v.as_u64()) {
-                    if let Ok(service_port) = u16::try_from(sp) {
-                        if let Some(tp) = port_obj.get("targetPort").and_then(|v| v.as_u64()) {
-                            if let Ok(target) = u16::try_from(tp) {
-                                node.port_mappings.push((service_port, target));
-                            }
-                        }
-                    }
+                if let Some(sp) = port_obj.get("port").and_then(|v| v.as_u64())
+                    && let Ok(service_port) = u16::try_from(sp)
+                    && let Some(tp) = port_obj.get("targetPort").and_then(|v| v.as_u64())
+                    && let Ok(target) = u16::try_from(tp)
+                {
+                    node.port_mappings.push((service_port, target));
                 }
             }
         }
@@ -573,7 +583,7 @@ fn build_dependency_edges(graph: &mut ServiceGraph) {
 
         // Environment variable references to other services
         for (env_key, env_val) in &node.environment {
-            for (svc_name, _svc_key) in &compose_names {
+            for svc_name in compose_names.keys() {
                 if *svc_name == node.name {
                     continue;
                 }
@@ -636,9 +646,7 @@ fn selector_matches(selector: &HashMap<String, String>, labels: &HashMap<String,
     if selector.is_empty() {
         return false;
     }
-    selector
-        .iter()
-        .all(|(k, v)| labels.get(k).map_or(false, |lv| lv == v))
+    selector.iter().all(|(k, v)| labels.get(k) == Some(v))
 }
 
 // ---------------------------------------------------------------------------
@@ -668,7 +676,11 @@ fn check_dangling_depends_on(graph: &ServiceGraph, findings: &mut Vec<TopologyFi
         .map(|(_, n)| n.name.clone())
         .collect();
 
-    for (_, node) in graph.nodes.iter().filter(|(k, _)| k.starts_with("compose:")) {
+    for (_, node) in graph
+        .nodes
+        .iter()
+        .filter(|(k, _)| k.starts_with("compose:"))
+    {
         for dep in &node.depends_on {
             if !compose_names.contains(dep) {
                 findings.push(TopologyFinding {
@@ -752,36 +764,36 @@ fn check_env_port_mismatches(graph: &ServiceGraph, findings: &mut Vec<TopologyFi
         }
 
         // Find env values that reference the target service and contain a port
-        for (_env_key, env_val) in &from_node.environment {
+        for env_val in from_node.environment.values() {
             if !env_val.contains(&to_node.name) {
                 continue;
             }
 
             for cap in port_re.captures_iter(env_val) {
-                if let Ok(port) = cap[1].parse::<u16>() {
-                    if !to_node.container_ports.contains(&port) {
-                        findings.push(TopologyFinding {
-                            rule_id: "TOPO003".into(),
-                            severity: TopologySeverity::Warning,
-                            message: format!(
-                                "Service '{}' references '{}' on port {}, but '{}' exposes port(s) {}",
-                                from_node.name,
-                                to_node.name,
-                                port,
-                                to_node.name,
-                                to_node
-                                    .container_ports
-                                    .iter()
-                                    .map(|p| p.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                            file: from_node.file.clone(),
-                            line: from_node.line,
-                            related_file: Some(to_node.file.clone()),
-                            related_line: Some(to_node.line),
-                        });
-                    }
+                if let Ok(port) = cap[1].parse::<u16>()
+                    && !to_node.container_ports.contains(&port)
+                {
+                    findings.push(TopologyFinding {
+                        rule_id: "TOPO003".into(),
+                        severity: TopologySeverity::Warning,
+                        message: format!(
+                            "Service '{}' references '{}' on port {}, but '{}' exposes port(s) {}",
+                            from_node.name,
+                            to_node.name,
+                            port,
+                            to_node.name,
+                            to_node
+                                .container_ports
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        file: from_node.file.clone(),
+                        line: from_node.line,
+                        related_file: Some(to_node.file.clone()),
+                        related_line: Some(to_node.line),
+                    });
                 }
             }
         }
@@ -906,7 +918,7 @@ pub fn render_topology_report(report: &TopologyReport, no_color: bool) -> String
         out.push('\n');
 
         // List services with their ports
-        for (_, node) in &report.graph.nodes {
+        for node in report.graph.nodes.values() {
             let ports = if node.container_ports.is_empty() {
                 String::new()
             } else {
@@ -921,12 +933,7 @@ pub fn render_topology_report(report: &TopologyReport, no_color: bool) -> String
             };
 
             if no_color {
-                out.push_str(&format!(
-                    "  {} ({}){}\n",
-                    node.name,
-                    node.kind,
-                    ports
-                ));
+                out.push_str(&format!("  {} ({}){}\n", node.name, node.kind, ports));
             } else {
                 out.push_str(&format!(
                     "  {} ({}){}\n",
@@ -1024,7 +1031,11 @@ pub fn render_topology_report(report: &TopologyReport, no_color: bool) -> String
                 "  [{}] {} ({})\n",
                 finding.rule_id, severity_str, finding.message
             ));
-            out.push_str(&format!("    at {}:{}\n", finding.file.display(), finding.line));
+            out.push_str(&format!(
+                "    at {}:{}\n",
+                finding.file.display(),
+                finding.line
+            ));
 
             if let (Some(rf), Some(rl)) = (&finding.related_file, finding.related_line) {
                 out.push_str(&format!("    see {}:{}\n", rf.display(), rl));
@@ -1351,7 +1362,10 @@ spec:
             .iter()
             .filter(|f| f.rule_id == "TOPO004")
             .collect();
-        assert!(topo004.is_empty(), "Matching ports should produce no finding");
+        assert!(
+            topo004.is_empty(),
+            "Matching ports should produce no finding"
+        );
     }
 
     #[test]

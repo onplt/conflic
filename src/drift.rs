@@ -81,11 +81,7 @@ pub fn capture_baseline(result: &ScanResult) -> OrganizationalBaseline {
         }
 
         // Pick the highest-authority assertion as the "expected" value
-        let best = cr
-            .assertions
-            .iter()
-            .max_by_key(|a| a.authority)
-            .unwrap();
+        let best = cr.assertions.iter().max_by_key(|a| a.authority).unwrap();
 
         expectations.push(BaselineExpectation {
             concept: cr.concept.id.clone(),
@@ -142,30 +138,27 @@ pub fn compare_to_baseline(
                 files: vec![],
             });
         } else if let Some(assertions) = assertions {
-                // Pick highest-authority assertion
-                let best = assertions.iter().max_by_key(|a| a.authority).unwrap();
-                let drift_kind = compute_drift(
-                    &expectation.expected,
-                    &best.raw_value,
-                    expectation.tolerance.as_deref(),
-                );
+            // Pick highest-authority assertion
+            let best = assertions.iter().max_by_key(|a| a.authority).unwrap();
+            let drift_kind = compute_drift(
+                &expectation.expected,
+                &best.raw_value,
+                expectation.tolerance.as_deref(),
+            );
 
-                if drift_kind == DriftKind::Exact {
-                    conformant += 1;
-                }
+            if drift_kind == DriftKind::Exact {
+                conformant += 1;
+            }
 
-                let files: Vec<PathBuf> = assertions
-                    .iter()
-                    .map(|a| a.source.file.clone())
-                    .collect();
+            let files: Vec<PathBuf> = assertions.iter().map(|a| a.source.file.clone()).collect();
 
-                entries.push(BaselineDriftEntry {
-                    concept: expectation.concept.clone(),
-                    expected: expectation.expected.clone(),
-                    actual: best.raw_value.clone(),
-                    drift_kind,
-                    files,
-                });
+            entries.push(BaselineDriftEntry {
+                concept: expectation.concept.clone(),
+                expected: expectation.expected.clone(),
+                actual: best.raw_value.clone(),
+                drift_kind,
+                files,
+            });
         }
     }
 
@@ -182,10 +175,7 @@ pub fn compare_to_baseline(
 }
 
 /// Resolve a concept alias to a real concept ID.
-fn resolve_concept_id(
-    alias: &str,
-    concept_map: &HashMap<String, Vec<&ConfigAssertion>>,
-) -> String {
+fn resolve_concept_id(alias: &str, concept_map: &HashMap<String, Vec<&ConfigAssertion>>) -> String {
     if concept_map.contains_key(alias) {
         return alias.to_string();
     }
@@ -205,19 +195,19 @@ fn compute_drift(expected: &str, actual: &str, tolerance: Option<&str>) -> Drift
     }
 
     // Check tolerance (e.g. "20.x" means any 20.x.y is acceptable)
-    if let Some(tolerance) = tolerance {
-        if matches_tolerance(actual, tolerance) {
-            return DriftKind::Minor;
-        }
+    if let Some(tolerance) = tolerance
+        && matches_tolerance(actual, tolerance)
+    {
+        return DriftKind::Minor;
     }
 
     // Check if it's a minor version drift (same major version)
     let expected_major = extract_major(expected);
     let actual_major = extract_major(actual);
-    if let (Some(em), Some(am)) = (expected_major, actual_major) {
-        if em == am {
-            return DriftKind::Minor;
-        }
+    if let (Some(em), Some(am)) = (expected_major, actual_major)
+        && em == am
+    {
+        return DriftKind::Minor;
     }
 
     DriftKind::Major

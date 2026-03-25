@@ -62,7 +62,10 @@ pub fn analyze_impact(
             concept_files
                 .entry(cr.concept.id.clone())
                 .or_default()
-                .push((norm_path.clone(), assertion.source.file.display().to_string()));
+                .push((
+                    norm_path.clone(),
+                    assertion.source.file.display().to_string(),
+                ));
 
             if changed_normalized.contains(&norm_path) {
                 direct_concepts.insert(cr.concept.id.clone());
@@ -75,11 +78,10 @@ pub fn analyze_impact(
         let mut concepts_for_file = Vec::new();
         for cr in &scan_result.concept_results {
             for assertion in &cr.assertions {
-                let norm = crate::pathing::normalize_for_workspace(scan_root, &assertion.source.file);
-                if norm == *path {
-                    if !concepts_for_file.contains(&cr.concept.id) {
-                        concepts_for_file.push(cr.concept.id.clone());
-                    }
+                let norm =
+                    crate::pathing::normalize_for_workspace(scan_root, &assertion.source.file);
+                if norm == *path && !concepts_for_file.contains(&cr.concept.id) {
+                    concepts_for_file.push(cr.concept.id.clone());
                 }
             }
         }
@@ -176,9 +178,7 @@ pub fn analyze_impact(
         .max();
 
     let blast_radius = BlastRadius {
-        files_affected: root_changes.len()
-            + direct_impacts.len()
-            + transitive_impacts.len(),
+        files_affected: root_changes.len() + direct_impacts.len() + transitive_impacts.len(),
         concepts_affected: all_concepts.len(),
         worst_severity,
     };
@@ -240,7 +240,10 @@ pub fn render_impact_report(report: &ImpactReport, no_color: bool) -> String {
     // Direct impacts
     if !report.direct_impacts.is_empty() {
         if no_color {
-            out.push_str(&format!("Direct impacts ({} file(s)):\n", report.direct_impacts.len()));
+            out.push_str(&format!(
+                "Direct impacts ({} file(s)):\n",
+                report.direct_impacts.len()
+            ));
         } else {
             out.push_str(&format!(
                 "{}\n",
@@ -287,9 +290,7 @@ pub fn render_impact_report(report: &ImpactReport, no_color: bool) -> String {
     if no_color {
         out.push_str(&format!(
             "Blast radius: {} file(s), {} concept(s), worst severity: {}\n",
-            report.blast_radius.files_affected,
-            report.blast_radius.concepts_affected,
-            severity_str,
+            report.blast_radius.files_affected, report.blast_radius.concepts_affected, severity_str,
         ));
     } else {
         out.push_str(&format!(
@@ -342,7 +343,8 @@ pub fn render_impact_json(report: &ImpactReport) -> String {
         "files": entries,
     });
 
-    serde_json::to_string_pretty(&report_json).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+    serde_json::to_string_pretty(&report_json)
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
 }
 
 #[cfg(test)]
@@ -440,7 +442,11 @@ mod tests {
 
         assert_eq!(report.root_changes.len(), 1);
         assert!(!report.transitive_impacts.is_empty());
-        assert!(report.affected_concepts.contains(&"pip-version".to_string()));
+        assert!(
+            report
+                .affected_concepts
+                .contains(&"pip-version".to_string())
+        );
     }
 
     #[test]

@@ -118,8 +118,8 @@ struct SolveOutput {
 
 #[cfg(feature = "wasm")]
 mod runtime {
-    use super::*;
-    use wasmi::{Caller, Engine, Func, Linker, Memory, Module, Store};
+
+    use wasmi::{Engine, Linker, Memory, Module, Store};
 
     pub struct WasmPlugin {
         store: Store<HostState>,
@@ -411,11 +411,15 @@ impl WasmSolver {
 
 #[cfg(feature = "wasm")]
 impl crate::solve::solver_trait::Solver for WasmSolver {
-    fn compatible(
-        &self,
-        left: &str,
-        right: &str,
-    ) -> crate::solve::solver_trait::Compatibility {
+    fn id(&self) -> &str {
+        &self.name
+    }
+
+    fn rule_id(&self) -> &str {
+        "WASM001"
+    }
+
+    fn compatible(&self, left: &str, right: &str) -> crate::solve::Compatibility {
         let concept_id = &self.name;
         let input = SolveInput {
             concept_id,
@@ -425,31 +429,31 @@ impl crate::solve::solver_trait::Solver for WasmSolver {
 
         let input_json = match serde_json::to_string(&input) {
             Ok(j) => j,
-            Err(_) => return crate::solve::solver_trait::Compatibility::Unknown,
+            Err(_) => return crate::solve::Compatibility::Unknown,
         };
 
         let mut plugin = match self.plugin.lock() {
             Ok(p) => p,
-            Err(_) => return crate::solve::solver_trait::Compatibility::Unknown,
+            Err(_) => return crate::solve::Compatibility::Unknown,
         };
 
         let output_json = match plugin.call_solve(&input_json) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("Wasm plugin '{}' solve error: {}", self.name, e);
-                return crate::solve::solver_trait::Compatibility::Unknown;
+                return crate::solve::Compatibility::Unknown;
             }
         };
 
         let output: SolveOutput = match serde_json::from_str(&output_json) {
             Ok(o) => o,
-            Err(_) => return crate::solve::solver_trait::Compatibility::Unknown,
+            Err(_) => return crate::solve::Compatibility::Unknown,
         };
 
         if output.compatible {
-            crate::solve::solver_trait::Compatibility::Compatible
+            crate::solve::Compatibility::Compatible
         } else {
-            crate::solve::solver_trait::Compatibility::Incompatible(output.explanation)
+            crate::solve::Compatibility::Incompatible(output.explanation)
         }
     }
 }
@@ -460,10 +464,7 @@ impl crate::solve::solver_trait::Solver for WasmSolver {
 
 /// Load all configured Wasm plugins and register them as extractors/solvers.
 #[cfg(feature = "wasm")]
-pub fn load_plugins(
-    plugin_configs: &[PluginConfig],
-    config_dir: &Path,
-) -> PluginLoadResult {
+pub fn load_plugins(plugin_configs: &[PluginConfig], config_dir: &Path) -> PluginLoadResult {
     let mut extractors: Vec<Box<dyn Extractor>> = Vec::new();
     let mut solvers: Vec<(String, Box<dyn crate::solve::solver_trait::Solver>)> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
@@ -473,7 +474,12 @@ pub fn load_plugins(
         let wasm_bytes = match std::fs::read(&wasm_path) {
             Ok(b) => b,
             Err(e) => {
-                errors.push(format!("Failed to read plugin '{}' at {}: {}", config.name, wasm_path.display(), e));
+                errors.push(format!(
+                    "Failed to read plugin '{}' at {}: {}",
+                    config.name,
+                    wasm_path.display(),
+                    e
+                ));
                 continue;
             }
         };
@@ -492,11 +498,17 @@ pub fn load_plugins(
                             config.file_patterns.clone(),
                         )));
                     } else {
-                        errors.push(format!("Plugin '{}' does not export conflic_extract", config.name));
+                        errors.push(format!(
+                            "Plugin '{}' does not export conflic_extract",
+                            config.name
+                        ));
                     }
                 }
                 Err(e) => {
-                    errors.push(format!("Failed to load extractor plugin '{}': {}", config.name, e));
+                    errors.push(format!(
+                        "Failed to load extractor plugin '{}': {}",
+                        config.name, e
+                    ));
                 }
             }
         }
@@ -511,7 +523,10 @@ pub fn load_plugins(
                                 Ok(solver_plugin) => {
                                     solvers.push((
                                         concept_id.clone(),
-                                        Box::new(WasmSolver::new(concept_id.clone(), solver_plugin)),
+                                        Box::new(WasmSolver::new(
+                                            concept_id.clone(),
+                                            solver_plugin,
+                                        )),
                                     ));
                                 }
                                 Err(e) => {
@@ -523,11 +538,17 @@ pub fn load_plugins(
                             }
                         }
                     } else {
-                        errors.push(format!("Plugin '{}' does not export conflic_solve", config.name));
+                        errors.push(format!(
+                            "Plugin '{}' does not export conflic_solve",
+                            config.name
+                        ));
                     }
                 }
                 Err(e) => {
-                    errors.push(format!("Failed to load solver plugin '{}': {}", config.name, e));
+                    errors.push(format!(
+                        "Failed to load solver plugin '{}': {}",
+                        config.name, e
+                    ));
                 }
             }
         }
@@ -549,10 +570,7 @@ pub struct PluginLoadResult {
 
 /// Stub loader when wasm feature is disabled.
 #[cfg(not(feature = "wasm"))]
-pub fn load_plugins(
-    plugin_configs: &[PluginConfig],
-    _config_dir: &Path,
-) -> PluginLoadResult {
+pub fn load_plugins(plugin_configs: &[PluginConfig], _config_dir: &Path) -> PluginLoadResult {
     let errors = if plugin_configs.is_empty() {
         vec![]
     } else {

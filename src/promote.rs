@@ -79,9 +79,7 @@ impl CompiledPromotion {
         let mut best_match: Option<usize> = None;
 
         for (chain_idx, matcher) in &self.matchers {
-            if matcher.is_match(path_str.as_ref())
-                || matcher.is_match(&filename)
-            {
+            if matcher.is_match(path_str.as_ref()) || matcher.is_match(&filename) {
                 // Prefer the most specific (highest chain index) match
                 match best_match {
                     None => best_match = Some(*chain_idx),
@@ -97,10 +95,7 @@ impl CompiledPromotion {
 
 /// Evaluate promotion chain rules and produce findings for cross-environment
 /// contradictions that violate the promotion direction.
-pub fn evaluate_promotions(
-    concept_results: &mut [ConceptResult],
-    config: &ConflicConfig,
-) {
+pub fn evaluate_promotions(concept_results: &mut [ConceptResult], config: &ConflicConfig) {
     let promotion_config = match &config.promotion {
         Some(pc) if !pc.chain.is_empty() => pc,
         _ => return,
@@ -137,10 +132,7 @@ pub fn evaluate_promotions(
                 let higher_assertions = &env_assertions[&higher_env];
 
                 // Compare best assertion from each environment
-                let lower_best = lower_assertions
-                    .iter()
-                    .max_by_key(|a| a.authority)
-                    .unwrap();
+                let lower_best = lower_assertions.iter().max_by_key(|a| a.authority).unwrap();
                 let higher_best = higher_assertions
                     .iter()
                     .max_by_key(|a| a.authority)
@@ -293,21 +285,12 @@ mod tests {
         let pc = make_promotion_config();
         let compiled = CompiledPromotion::compile(&pc).unwrap();
 
-        assert_eq!(
-            compiled.detect_environment(Path::new(".env.dev")),
-            Some(0)
-        );
+        assert_eq!(compiled.detect_environment(Path::new(".env.dev")), Some(0));
         assert_eq!(
             compiled.detect_environment(Path::new(".env.staging")),
             Some(1)
         );
-        assert_eq!(
-            compiled.detect_environment(Path::new(".env.prod")),
-            Some(2)
-        );
-        assert_eq!(
-            compiled.detect_environment(Path::new(".nvmrc")),
-            None
-        );
+        assert_eq!(compiled.detect_environment(Path::new(".env.prod")), Some(2));
+        assert_eq!(compiled.detect_environment(Path::new(".nvmrc")), None);
     }
 }

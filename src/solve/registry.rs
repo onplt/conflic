@@ -28,11 +28,7 @@ impl SolverRegistry {
     }
 
     /// Register an N-ary constraint solver for a specific concept.
-    pub fn register_constraint(
-        &mut self,
-        concept_id: String,
-        solver: Box<dyn ConstraintSolver>,
-    ) {
+    pub fn register_constraint(&mut self, concept_id: String, solver: Box<dyn ConstraintSolver>) {
         self.constraint_solvers.insert(concept_id, solver);
     }
 

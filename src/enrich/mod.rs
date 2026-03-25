@@ -154,66 +154,62 @@ fn check_eol_policies(
         }
 
         // Check if policy rule is "eol-window >= N"
-        if let Some(window_days) = parse_eol_window_rule(&policy.rule) {
-            if let Some(days) = days_until {
-                if days <= window_days as i64 {
-                    let severity = match policy.severity.to_lowercase().as_str() {
-                        "error" => Severity::Error,
-                        "info" => Severity::Info,
-                        _ => Severity::Warning,
-                    };
+        if let Some(window_days) = parse_eol_window_rule(&policy.rule)
+            && let Some(days) = days_until
+            && days <= window_days as i64
+        {
+            let severity = match policy.severity.to_lowercase().as_str() {
+                "error" => Severity::Error,
+                "info" => Severity::Info,
+                _ => Severity::Warning,
+            };
 
-                    let message = if days <= 0 {
-                        format!(
-                            "\"{}\" has reached end-of-life (EOL: {})",
-                            assertion.raw_value, eol_date,
-                        )
-                    } else {
-                        format!(
-                            "\"{}\" reaches end-of-life in {} days (EOL: {})",
-                            assertion.raw_value, days, eol_date,
-                        )
-                    };
+            let message = if days <= 0 {
+                format!(
+                    "\"{}\" has reached end-of-life (EOL: {})",
+                    assertion.raw_value, eol_date,
+                )
+            } else {
+                format!(
+                    "\"{}\" reaches end-of-life in {} days (EOL: {})",
+                    assertion.raw_value, days, eol_date,
+                )
+            };
 
-                    let enriched_message = if let Some(ref msg) = policy.message {
-                        format!("{}: {}", message, msg)
-                    } else {
-                        message
-                    };
+            let enriched_message = if let Some(ref msg) = policy.message {
+                format!("{}: {}", message, msg)
+            } else {
+                message
+            };
 
-                    let latest_info = lifecycle
-                        .latest_patch
-                        .as_deref()
-                        .unwrap_or("unknown");
+            let latest_info = lifecycle.latest_patch.as_deref().unwrap_or("unknown");
 
-                    let policy_assertion = ConfigAssertion {
-                        concept: assertion.concept.clone(),
-                        value: SemanticType::StringValue(format!(
-                            "EOL: {}, latest: {}",
-                            eol_date, latest_info
-                        )),
-                        raw_value: policy.rule.clone(),
-                        source: assertion::SourceLocation {
-                            file: std::path::PathBuf::from(".conflic-registry-cache.json"),
-                            line: 0,
-                            column: 0,
-                            key_path: format!("eol.{}", assertion.concept.id),
-                        },
-                        span: None,
-                        authority: Authority::Enforced,
-                        extractor_id: "registry-enrichment".into(),
-                        is_matrix: false,
-                    };
+            let policy_assertion = ConfigAssertion {
+                concept: assertion.concept.clone(),
+                value: SemanticType::StringValue(format!(
+                    "EOL: {}, latest: {}",
+                    eol_date, latest_info
+                )),
+                raw_value: policy.rule.clone(),
+                source: assertion::SourceLocation {
+                    file: std::path::PathBuf::from(".conflic-registry-cache.json"),
+                    line: 0,
+                    column: 0,
+                    key_path: format!("eol.{}", assertion.concept.id),
+                },
+                span: None,
+                authority: Authority::Enforced,
+                extractor_id: "registry-enrichment".into(),
+                is_matrix: false,
+            };
 
-                    findings.push(Finding {
-                        severity,
-                        left: assertion.clone(),
-                        right: policy_assertion,
-                        explanation: enriched_message,
-                        rule_id: policy.id.clone(),
-                    });
-                }
-            }
+            findings.push(Finding {
+                severity,
+                left: assertion.clone(),
+                right: policy_assertion,
+                explanation: enriched_message,
+                rule_id: policy.id.clone(),
+            });
         }
     }
 }

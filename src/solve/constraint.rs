@@ -10,9 +10,7 @@ pub enum ConstraintResult {
     },
     /// No single value satisfies all assertions; `minimal_conflict` contains
     /// indices (into the input slice) of the smallest unsatisfiable subset.
-    Unsatisfiable {
-        minimal_conflict: Vec<usize>,
-    },
+    Unsatisfiable { minimal_conflict: Vec<usize> },
 }
 
 /// Trait for N-ary constraint satisfaction over a set of assertions.
@@ -152,10 +150,10 @@ fn intersect_interval_sets(a: &[Interval], b: &[Interval]) -> Vec<Interval> {
     let mut bi = 0;
 
     while ai < a.len() && bi < b.len() {
-        if let Some(inter) = a[ai].intersect(b[bi]) {
-            if !inter.is_empty() {
-                result.push(inter);
-            }
+        if let Some(inter) = a[ai].intersect(b[bi])
+            && !inter.is_empty()
+        {
+            result.push(inter);
         }
         // Advance the interval that ends first
         if a[ai].hi <= b[bi].hi {
@@ -188,9 +186,9 @@ impl ConstraintSolver for VersionConstraintSolver {
         // Prerelease versions have special semver semantics that interval
         // arithmetic cannot represent. Fall back to pairwise (return Unsatisfiable
         // with empty conflict to trigger full pairwise).
-        let has_prerelease_assertion = assertions.iter().any(|a| {
-            matches!(&a.value, SemanticType::Version(spec) if has_prerelease(spec))
-        });
+        let has_prerelease_assertion = assertions
+            .iter()
+            .any(|a| matches!(&a.value, SemanticType::Version(spec) if has_prerelease(spec)));
         if has_prerelease_assertion {
             return ConstraintResult::Unsatisfiable {
                 minimal_conflict: vec![],
@@ -201,12 +199,12 @@ impl ConstraintSolver for VersionConstraintSolver {
         let mut assertion_intervals: Vec<(usize, Vec<Interval>)> = Vec::new();
 
         for (idx, assertion) in assertions.iter().enumerate() {
-            if let SemanticType::Version(ref spec) = assertion.value {
-                if let Some(intervals) = version_to_intervals(spec) {
-                    assertion_intervals.push((idx, intervals));
-                }
-                // If we can't convert, skip — it won't participate in constraint check
+            if let SemanticType::Version(ref spec) = assertion.value
+                && let Some(intervals) = version_to_intervals(spec)
+            {
+                assertion_intervals.push((idx, intervals));
             }
+            // If we can't convert, skip — it won't participate in constraint check
         }
 
         if assertion_intervals.len() < 2 {
@@ -222,8 +220,8 @@ impl ConstraintSolver for VersionConstraintSolver {
         let mut current = assertion_intervals[0].1.clone();
         let mut first_empty_idx = None;
 
-        for i in 1..assertion_intervals.len() {
-            let next = intersect_interval_sets(&current, &assertion_intervals[i].1);
+        for (i, (_idx, intervals)) in assertion_intervals.iter().enumerate().skip(1) {
+            let next = intersect_interval_sets(&current, intervals);
             if next.is_empty() {
                 first_empty_idx = Some(i);
                 break;
@@ -261,8 +259,10 @@ fn find_minimal_conflict(
 ) -> Vec<usize> {
     // Try each pair involving the assertion that caused emptiness
     for i in 0..known_empty_idx {
-        let intersection =
-            intersect_interval_sets(&assertion_intervals[i].1, &assertion_intervals[known_empty_idx].1);
+        let intersection = intersect_interval_sets(
+            &assertion_intervals[i].1,
+            &assertion_intervals[known_empty_idx].1,
+        );
         if intersection.is_empty() {
             return vec![
                 assertion_intervals[i].0,

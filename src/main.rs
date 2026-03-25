@@ -175,7 +175,9 @@ fn main() -> Result<()> {
         let topo_report = conflic::topology::analyze_topology(&parsed_files, &scan_path);
 
         let output = match output_format {
-            conflic::cli::OutputFormat::Json => conflic::topology::render_topology_json(&topo_report),
+            conflic::cli::OutputFormat::Json => {
+                conflic::topology::render_topology_json(&topo_report)
+            }
             _ => conflic::topology::render_topology_report(&topo_report, cli.no_color),
         };
         print!("{}", output);
@@ -230,10 +232,13 @@ fn main() -> Result<()> {
     // Impact analysis mode
     if cli.impact {
         let changed_files: Vec<std::path::PathBuf> = if let Some(ref git_ref) = cli.diff {
-            conflic::git_changed_files(&scan_path, git_ref)
-                .with_context(|| format!("Failed to collect changed files for git ref {}", git_ref))?
+            conflic::git_changed_files(&scan_path, git_ref).with_context(|| {
+                format!("Failed to collect changed files for git ref {}", git_ref)
+            })?
         } else {
-            eprintln!("Warning: --impact works best with --diff <ref>; showing impact for all files.");
+            eprintln!(
+                "Warning: --impact works best with --diff <ref>; showing impact for all files."
+            );
             result
                 .concept_results
                 .iter()

@@ -1,4 +1,5 @@
 pub mod boolean;
+pub mod constraint;
 pub mod port;
 pub mod registry;
 pub mod severity;
@@ -73,9 +74,17 @@ pub fn compare_assertions_with_solvers(
             continue;
         }
 
+        let constraint_solver = solvers.get_constraint(&concept_id);
         let concept_solver = solvers.get(&concept_id);
-        let findings = if use_monorepo && !config.monorepo.global_concepts.contains(&concept_id) {
+        let is_monorepo_scoped =
+            use_monorepo && !config.monorepo.global_concepts.contains(&concept_id);
+
+        // Monorepo per-package scoping always takes precedence.
+        // N-ary constraint solver is a fast-path only for non-monorepo concepts.
+        let findings = if is_monorepo_scoped {
             monorepo::find_monorepo_contradictions(scan_root, &group, config, concept_solver)
+        } else if let Some(cs) = constraint_solver {
+            constraint_findings(&group, config, cs, concept_solver)
         } else {
             findings::find_contradictions(&group, config, concept_solver)
         };
@@ -96,6 +105,26 @@ pub enum Compatibility {
     Compatible,
     Incompatible(String),
     Unknown,
+}
+
+/// Use the N-ary constraint solver as a fast-path: if all assertions are
+/// satisfiable simultaneously, skip pairwise comparison entirely (O(n log n)
+/// instead of O(n^2)). When unsatisfiable, fall back to full pairwise to
+/// preserve correct severity computation from authority levels.
+fn constraint_findings(
+    assertions: &[ConfigAssertion],
+    config: &ConflicConfig,
+    cs: &dyn constraint::ConstraintSolver,
+    pairwise_solver: Option<&dyn solver_trait::Solver>,
+) -> Vec<Finding> {
+    let refs: Vec<&ConfigAssertion> = assertions.iter().collect();
+    match cs.satisfiable(&refs) {
+        constraint::ConstraintResult::Satisfiable { .. } => vec![],
+        constraint::ConstraintResult::Unsatisfiable { .. } => {
+            // Fall back to full pairwise to produce correctly-severed findings
+            findings::find_contradictions(assertions, config, pairwise_solver)
+        }
+    }
 }
 
 #[cfg(test)]

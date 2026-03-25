@@ -17,6 +17,10 @@ pub struct ConflicConfig {
     pub policy: Vec<PolicyConfig>,
     #[serde(default)]
     pub concept_rule: Vec<ConceptRuleConfig>,
+    #[serde(default)]
+    pub promotion: Option<crate::promote::PromotionConfig>,
+    #[serde(default)]
+    pub plugin: Vec<crate::plugin::PluginConfig>,
     #[serde(skip)]
     compiled_custom_extractors: Vec<crate::extract::custom::CustomExtractor>,
     #[serde(skip)]

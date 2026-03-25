@@ -111,6 +111,22 @@ pub struct Cli {
     /// Initialize a federation config template
     #[arg(long)]
     pub init_federation: bool,
+
+    /// Show impact analysis for changed files (use with --diff)
+    #[arg(long)]
+    pub impact: bool,
+
+    /// Capture current scan as an organizational baseline (.conflic-baseline.toml)
+    #[arg(long)]
+    pub capture_baseline: Option<PathBuf>,
+
+    /// Check conformance against an organizational baseline
+    #[arg(long)]
+    pub drift_baseline: Option<PathBuf>,
+
+    /// Analyze service topology from docker-compose and Kubernetes manifests
+    #[arg(long)]
+    pub topology: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

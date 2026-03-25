@@ -1,6 +1,6 @@
 [package]
 name = "conflic"
-version = "1.1.5"
+version = "1.1.6"
 edition = "2024"
 description = "Detect semantic contradictions across config files"
 license = "MIT"
@@ -49,9 +49,13 @@ thiserror = "2.0"
 tower-lsp = { version = "0.20", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 
+# Wasm plugins (optional)
+wasmi = { version = "0.40", optional = true }
+
 [features]
 default = ["lsp"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
+wasm = ["dep:wasmi"]
 
 [dev-dependencies]
 assert_cmd = "2.0"

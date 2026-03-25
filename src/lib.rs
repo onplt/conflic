@@ -2,22 +2,28 @@ pub mod baseline;
 pub mod cli;
 pub mod config;
 pub mod discover;
+pub mod drift;
+pub mod enrich;
 pub mod error;
 pub mod extract;
 pub mod federation;
 pub mod fix;
 pub mod graph;
 pub mod history;
+pub mod impact;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod model;
 pub mod parse;
-mod pathing;
+pub(crate) mod pathing;
 mod pipeline;
+pub mod plugin;
 mod planning;
 pub mod policy;
+pub mod promote;
 pub mod report;
 pub mod solve;
+pub mod topology;
 mod workspace;
 
 use std::collections::BTreeSet;
@@ -69,6 +75,20 @@ pub fn git_changed_files(root: &Path, git_ref: &str) -> Result<Vec<PathBuf>> {
     files.extend(git_command_path_lines(root, &untracked_args)?);
 
     Ok(files.into_iter().collect())
+}
+
+/// Discover and parse files for topology analysis.
+pub fn parse_files_for_topology(root: &Path, config: &ConflicConfig) -> Vec<parse::ParsedFile> {
+    let discovered = planning::discover_files(root, config);
+    let mut parsed = Vec::new();
+    for paths in discovered.values() {
+        for path in paths {
+            if let Ok(file) = parse::parse_file(path, root) {
+                parsed.push(file);
+            }
+        }
+    }
+    parsed
 }
 
 /// Run the scan pipeline in diagnostic mode, collecting intermediate data.
